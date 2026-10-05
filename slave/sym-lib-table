@@ -1,6 +1,7 @@
 (sym_lib_table
   (version 7)
   (lib (name "board_game_v1-cache")(type "Legacy")(uri "${KIPRJMOD}/../libraries/board_game_v1-cache.lib")(options "")(descr "Custom symbols for Modular LED Board V1"))
+  (lib (name "board_game")(type "Legacy")(uri "${KIPRJMOD}/../libraries/board_game_v1-cache.lib")(options "")(descr "Board support symbols: 5V power, 6-pin magnetic links, UPDI and level converter"))
   (lib (name "esp32-wemos-d1-mini")(type "KiCad")(uri "${KIPRJMOD}/../libraries/esp32-wemos-d1-mini/esp32-wemos-d1-mini.kicad_sym")(options "")(descr "ESP32 Wemos D1 Mini"))
   (lib (name "ws2812-matrix-2x2")(type "KiCad")(uri "${KIPRJMOD}/../libraries/ws2812-matrix-2x2/ws2812-matrix-2x2.kicad_sym")(options "")(descr "WS2812 2x2 Matrix 15x15mm"))
 )
