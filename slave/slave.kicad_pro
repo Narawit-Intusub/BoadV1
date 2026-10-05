@@ -1,0 +1,18 @@
+{
+  "board": {},
+  "boards": [],
+  "component_class_settings": {},
+  "cvpcb": {},
+  "erc": {},
+  "libraries": {},
+  "meta": {
+    "filename": "slave.kicad_pro",
+    "version": 3
+  },
+  "net_settings": {},
+  "pcbnew": {},
+  "schematic": {},
+  "sheets": [],
+  "text_variables": {},
+  "tuning_profiles": {}
+}

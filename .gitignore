@@ -1,0 +1,25 @@
+# Ignore all files and directories in root by default
+/*
+
+# Allow .gitignore itself and README.md
+!.gitignore
+!README.md
+
+# Only track master/ and slave/ directories
+!/master/
+!/slave/
+
+# ==========================================
+# KiCad temporary, backup & report files
+# ==========================================
+*.bak
+*.kicad_sch.bak
+*.kicad_sch-bak
+*.kicad_pcb.bak
+*.kicad_pcb-bak
+*-bak
+_autosave-*
+*.tmp
+*.rpt
+erc_report*.txt
+.history/
