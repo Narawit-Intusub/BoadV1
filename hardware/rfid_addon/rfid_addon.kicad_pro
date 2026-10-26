@@ -256,7 +256,7 @@
     "pinned_symbol_libs": []
   },
   "meta": {
-    "filename": "master.kicad_pro",
+    "filename": "rfid_addon.kicad_pro",
     "version": 3
   },
   "net_settings": {
@@ -424,18 +424,18 @@
     "subpart_id_separator": 0,
     "top_level_sheets": [
       {
-        "filename": "master.kicad_sch",
-        "name": "master",
-        "uuid": "c11e48dc-f61a-43ef-8c8c-d42f62ea50d4"
+        "filename": "rfid_addon.kicad_sch",
+        "name": "rfid_addon",
+        "uuid": "7c56e978-0c84-460a-a427-765722c91308"
       }
     ],
-    "used_designators": "MOD1-16,U1-3",
+    "used_designators": "",
     "variants": []
   },
   "sheets": [
     [
-      "c11e48dc-f61a-43ef-8c8c-d42f62ea50d4",
-      "master"
+      "7c56e978-0c84-460a-a427-765722c91308",
+      "rfid_addon"
     ]
   ],
   "text_variables": {},

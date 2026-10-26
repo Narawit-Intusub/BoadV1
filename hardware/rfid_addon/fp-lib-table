@@ -1,5 +1,4 @@
 (fp_lib_table
   (version 7)
   (lib (name "esp32-wemos-d1-mini")(type "KiCad")(uri "${KIPRJMOD}/../libraries/esp32-wemos-d1-mini/esp32-wemos-d1-mini.pretty")(options "")(descr "ESP32 Wemos D1 Mini footprint"))
-  (lib (name "ws2812-matrix-2x2")(type "KiCad")(uri "${KIPRJMOD}/../libraries/ws2812-matrix-2x2/ws2812-matrix-2x2.pretty")(options "")(descr "WS2812 2x2 Matrix 15x15mm footprint"))
 )

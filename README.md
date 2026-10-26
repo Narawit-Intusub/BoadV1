@@ -9,9 +9,56 @@
 - Unity ติดต่อ ESP32 ผ่าน Wi-Fi
 - ESP32 ติดต่อ Master ATtiny1604 ผ่าน Logic Level Converter
 
-อ่านรายละเอียดการออกแบบทั้งหมดได้ที่ [V1_design_summary.md](V1_design_summary.md)
+อ่านรายละเอียดการออกแบบทั้งหมดได้ที่ [docs/V1_design_summary.md](docs/V1_design_summary.md)
 
-## ข้อสรุปปัจจุบัน
+---
+
+## โครงสร้างโปรเจกต์ KiCad
+
+โปรเจกต์นี้ได้รับการจัดโครงสร้างตามมาตรฐาน Multi-board Electronics Hardware:
+
+```text
+board game/
+├── hardware/
+│   ├── master/                 # บอร์ด Master (ESP32 + ATtiny1604 + LED Matrix 4x4)
+│   │   ├── master.kicad_pro    # ไฟล์หลักสำหรับเปิดใน KiCad
+│   │   ├── master.kicad_sch    # วงจร Schematic
+│   │   ├── master.kicad_pcb    # เลย์เอาต์แผ่นวงจรพิมพ์ PCB
+│   │   ├── sym-lib-table       # Symbol library mapping
+│   │   └── fp-lib-table        # Footprint library mapping
+│   ├── slave/                  # บอร์ด Slave (ATtiny1604 + LED Matrix 4x4)
+│   │   ├── slave.kicad_pro     # ไฟล์หลักสำหรับเปิดใน KiCad
+│   │   ├── slave.kicad_sch     # วงจร Schematic
+│   │   ├── sym-lib-table       # Symbol library mapping
+│   │   └── fp-lib-table        # Footprint library mapping
+│   ├── rfid_addon/             # บอร์ดขยาย RFID Addon
+│   │   ├── rfid_addon.kicad_pro
+│   │   ├── rfid_addon.kicad_sch
+│   │   ├── sym-lib-table
+│   │   └── fp-lib-table
+│   └── libraries/              # Custom Symbols & Footprints รวมของโครงการ
+│       ├── esp32-wemos-d1-mini/
+│       ├── magnetic-connector/
+│       ├── ws2812-matrix-2x2/
+│       └── board_game_v1-cache.lib
+├── docs/                       # เอกสาร สรุปวงจร และไฟล์ Output
+│   ├── pdf/                    # master.pdf, slave.pdf
+│   ├── renders/                # ภาพ Render 3D และ SVG
+│   ├── reports/                # ผลการตรวจ ERC / DRC
+│   └── V1_design_summary.md    # รายละเอียดเชิงเทคนิคทั้งระบบ
+├── README.md
+└── .gitignore
+```
+
+### วิธีเปิดในโปรแกรม KiCad
+เปิดโปรแกรม KiCad จากนั้นกด **File → Open Project** แล้วเลือกไฟล์โปรเจกต์ของแต่ละบอร์ดตามที่ต้องการ:
+- **Master Board:** [hardware/master/master.kicad_pro](hardware/master/master.kicad_pro)
+- **Slave Board:** [hardware/slave/slave.kicad_pro](hardware/slave/slave.kicad_pro)
+- **RFID Addon Board:** [hardware/rfid_addon/rfid_addon.kicad_pro](hardware/rfid_addon/rfid_addon.kicad_pro)
+
+---
+
+## ข้อสรุปการออกแบบระบบ
 
 - ใช้ Switching Power Supply 5V 30A แหล่งเดียว
 - Master และ Slave ต่อ `5V/GND` แบบขนาน
@@ -21,15 +68,6 @@
 - ขั้วแม่เหล็กใช้ 6 พิน: `5V ×2`, `GND ×2`, `D0`, `D1`
 - จำกัดความสว่างทุก Channel ไม่เกิน 50/255
 - V1 ใช้ Unity เป็น Source of truth สำหรับตำแหน่งตัวละครและช่อง Action
-
-## ไฟล์ KiCad
-
-- แบบ Master ที่แนะนำ: [master_design_clean/master_design_clean.kicad_sch](master_design_clean/master_design_clean.kicad_sch)
-- ไฟล์โครงการ: [master_design_clean/master_design_clean.kicad_pro](master_design_clean/master_design_clean.kicad_pro)
-- แบบ Master ต้นฉบับ: [master/master.kicad_sch](master/master.kicad_sch)
-- แบบทดลองเดินสายเต็ม: [master_wiring_v2/master_wiring_v2.kicad_sch](master_wiring_v2/master_wiring_v2.kicad_sch)
-
-`master_design_clean` แบ่งวงจรเป็นบล็อกและใช้ Global Label แบบหัวลูกศรสำหรับการเชื่อมต่อข้ามบล็อก สายที่มองเห็นจึงเหลือเฉพาะสายสั้นระหว่างโมดูล LED ที่อยู่ติดกัน
 
 ## การต่อไฟระหว่างบอร์ด
 

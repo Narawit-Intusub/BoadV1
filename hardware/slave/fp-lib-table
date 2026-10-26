@@ -1,0 +1,11 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "esp32-wemos-d1-mini")(type "KiCad")(uri "${KIPRJMOD}/../libraries/esp32-wemos-d1-mini/esp32-wemos-d1-mini.pretty")(options "")(descr "ESP32 Wemos D1 Mini footprint"))
+  (lib (name "ws2812-matrix-2x2")(type "KiCad")(uri "${KIPRJMOD}/../libraries/ws2812-matrix-2x2/ws2812-matrix-2x2.pretty")(options "")(descr "WS2812 2x2 Matrix 15x15mm footprint"))
+  (lib (name "magnetic-connector")(type "KiCad")(uri "${KIPRJMOD}/../libraries/magnetic-connector/magnetic-connector.pretty")(options "")(descr "6-pin Magnetic Connectors"))
+  (lib (name "Library")(type "KiCad")(uri "${KIPRJMOD}/../libraries/magnetic-connector/magnetic-connector.pretty")(options "")(descr "Magnetic Connectors Library Alias"))
+  (lib (name "d-sun-stepdown")(type "KiCad")(uri "${KIPRJMOD}/../libraries/d-sun-stepdown/d-sun-stepdown.pretty")(options "")(descr "D-SUN DC-DC Step-Down Buck Converter Module"))
+  (lib (name "logic-level-converter-2ch")(type "KiCad")(uri "${KIPRJMOD}/../libraries/logic-level-converter-2ch/logic-level-converter-2ch.pretty")(options "")(descr "2-Channel Logic Level Converter Module"))
+  (lib (name "pin-header-1x03-smd")(type "KiCad")(uri "${KIPRJMOD}/../libraries/pin-header-1x03-smd/pin-header-1x03-smd.pretty")(options "")(descr "1x03 2.54mm Right-Angle SMD Pin Header"))
+  (lib (name "usb-c-pd-ip2721")(type "KiCad")(uri "${KIPRJMOD}/../libraries/usb-c-pd-ip2721/usb-c-pd-ip2721.pretty")(options "")(descr "USB-C PD 12V Trigger / Decoy Module (IP2721)"))
+)

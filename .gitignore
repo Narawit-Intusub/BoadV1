@@ -1,25 +1,35 @@
-# Ignore all files and directories in root by default
-/*
-
-# Allow .gitignore itself and README.md
-!.gitignore
-!README.md
-
-# Only track master/ and slave/ directories
-!/master/
-!/slave/
-
 # ==========================================
-# KiCad temporary, backup & report files
+# KiCad Temporary, Backup & Output Files
 # ==========================================
-*.bak
-*.kicad_sch.bak
-*.kicad_sch-bak
-*.kicad_pcb.bak
-*.kicad_pcb-bak
-*-bak
-_autosave-*
 *.tmp
+*.bak
+*.bak*
+*-bak
+*-bak-*
+*.kicad_sch-bak
+*.kicad_pcb-bak
+_autosave-*
+*.kicad_prl
+*.lck
+~*
+*.net
+temp_board.*
+
+# Reports
 *.rpt
 erc_report*.txt
+drc_report*.txt
+
+# Local Editor & OS Files
 .history/
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+
+# Agent / Tooling / Temporary
+.agents/
+skills/
+analysis/
+temp/
+ex/
