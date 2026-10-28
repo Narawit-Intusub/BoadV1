@@ -210,7 +210,14 @@
         }
       ],
       "track_widths": [
-        0.0
+        0.0,
+        0.3,
+        0.35,
+        0.4,
+        0.6,
+        0.8,
+        1.0,
+        1.2
       ],
       "tuning_pattern_settings": {
         "diff_pair_defaults": {
@@ -242,6 +249,14 @@
         {
           "diameter": 0.0,
           "drill": 0.0
+        },
+        {
+          "diameter": 0.8,
+          "drill": 0.4
+        },
+        {
+          "diameter": 1.0,
+          "drill": 0.5
         }
       ],
       "zones_allow_external_fillets": false
@@ -519,18 +534,127 @@
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 2147483647,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.2,
+        "track_width": 0.35,
         "tuning_profile": "",
-        "via_diameter": 0.6,
-        "via_drill": 0.3,
+        "via_diameter": 0.8,
+        "via_drill": 0.4,
         "wire_width": 6
+      },
+      {
+        "bus_width": 12,
+        "clearance": 0.25,
+        "diff_pair_gap": 0.25,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.2,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "name": "Power_12V",
+        "pcb_color": "rgba(255, 69, 0, 0.902)",
+        "priority": 0,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 1.2,
+        "tuning_profile": "",
+        "via_diameter": 1.0,
+        "via_drill": 0.5,
+        "wire_width": 10
+      },
+      {
+        "bus_width": 12,
+        "clearance": 0.2,
+        "diff_pair_gap": 0.25,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.2,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "name": "Power_3V3",
+        "pcb_color": "rgba(255, 215, 0, 0.902)",
+        "priority": 2,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.6,
+        "tuning_profile": "",
+        "via_diameter": 0.8,
+        "via_drill": 0.4,
+        "wire_width": 6
+      },
+      {
+        "bus_width": 12,
+        "clearance": 0.25,
+        "diff_pair_gap": 0.25,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.2,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "name": "Power_5V",
+        "pcb_color": "rgba(255, 165, 0, 0.902)",
+        "priority": 1,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 1.0,
+        "tuning_profile": "",
+        "via_diameter": 1.0,
+        "via_drill": 0.5,
+        "wire_width": 8
       }
     ],
     "meta": {
       "version": 5
     },
     "net_colors": null,
-    "netclass_assignments": null,
+    "netclass_assignments": {
+      "+12V_BUS": [
+        "Power_12V"
+      ],
+      "+3V3": [
+        "Power_3V3"
+      ],
+      "+5V_LOCAL": [
+        "Power_5V"
+      ],
+      "Net-(F_MAIN1-Pad1)": [
+        "Power_12V"
+      ],
+      "Net-(J_PWR1-+12V_IN)": [
+        "Power_12V"
+      ],
+      "Net-(MOD1-VCC_OUT)": [
+        "Power_5V"
+      ],
+      "Net-(MOD10-VCC_IN)": [
+        "Power_5V"
+      ],
+      "Net-(MOD10-VCC_OUT)": [
+        "Power_5V"
+      ],
+      "Net-(MOD11-VCC_OUT)": [
+        "Power_5V"
+      ],
+      "Net-(MOD13-VCC_OUT)": [
+        "Power_5V"
+      ],
+      "Net-(MOD14-VCC_OUT)": [
+        "Power_5V"
+      ],
+      "Net-(MOD15-VCC_OUT)": [
+        "Power_5V"
+      ],
+      "Net-(MOD2-VCC_OUT)": [
+        "Power_5V"
+      ],
+      "Net-(MOD3-VCC_OUT)": [
+        "Power_5V"
+      ],
+      "Net-(MOD5-VCC_OUT)": [
+        "Power_5V"
+      ],
+      "Net-(MOD6-VCC_OUT)": [
+        "Power_5V"
+      ],
+      "Net-(MOD7-VCC_OUT)": [
+        "Power_5V"
+      ]
+    },
     "netclass_patterns": []
   },
   "pcbnew": {

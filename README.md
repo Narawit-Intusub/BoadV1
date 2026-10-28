@@ -41,6 +41,10 @@ board game/
 │       ├── magnetic-connector/
 │       ├── ws2812-matrix-2x2/
 │       └── board_game_v1-cache.lib
+├── firmware/                   # ซอร์สโค้ดเฟิร์มแวร์ Arduino / megaTinyCore
+│   ├── esp32_usb_bridge/       # ตัวส่งสัญญาณ USB Bridge (ESP-NOW)
+│   ├── esp32_master_gateway/   # ตัวรับบนบอร์ดแม่ Master Gateway
+│   └── attiny1604_tile_controller/ # ตัวขับหลอดไฟประจำแผ่น ATtiny1604
 ├── docs/                       # เอกสาร สรุปวงจร และไฟล์ Output
 │   ├── pdf/                    # master.pdf, slave.pdf
 │   ├── renders/                # ภาพ Render 3D และ SVG
