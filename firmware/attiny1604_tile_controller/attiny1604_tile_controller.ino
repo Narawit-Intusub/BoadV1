@@ -105,9 +105,24 @@ void processPacket(uint8_t type, uint8_t src, uint8_t dest, uint8_t seq, uint8_t
     if (type == PKT_TILE_DATA) {
         // ตรวจสอบว่าส่งมาให้แผ่นของเราหรือไม่ (หรือ Broadcast 0xFF)
         if (dest == MY_TILE_ID || dest == 0xFF) {
-            for (uint8_t i = 0; i < len && i < sizeof(backBuffer); i++) {
-                // Clamp ค่าสีทุก Channel ไม่ให้เกิน MAX_BRIGHTNESS (50)
-                backBuffer[i] = (data[i] > MAX_BRIGHTNESS) ? MAX_BRIGHTNESS : data[i];
+            for (uint8_t cell = 0; cell < NUM_CELLS && (cell * 3 + 2) < len; cell++) {
+                uint8_t r = data[cell * 3 + 0];
+                uint8_t g = data[cell * 3 + 1];
+                uint8_t b = data[cell * 3 + 2];
+
+                // ย่อสัดส่วนความสว่างไม่ให้เกิน MAX_BRIGHTNESS (50) โดยคงอัตราส่วนแม่สี R:G:B เดิมไว้
+                uint8_t maxComp = r;
+                if (g > maxComp) maxComp = g;
+                if (b > maxComp) maxComp = b;
+                if (maxComp > MAX_BRIGHTNESS) {
+                    r = (uint8_t)((uint16_t)r * MAX_BRIGHTNESS / maxComp);
+                    g = (uint8_t)((uint16_t)g * MAX_BRIGHTNESS / maxComp);
+                    b = (uint8_t)((uint16_t)b * MAX_BRIGHTNESS / maxComp);
+                }
+
+                backBuffer[cell * 3 + 0] = r;
+                backBuffer[cell * 3 + 1] = g;
+                backBuffer[cell * 3 + 2] = b;
             }
         }
     } 

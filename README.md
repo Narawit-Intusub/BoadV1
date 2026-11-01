@@ -44,7 +44,14 @@ board game/
 ├── firmware/                   # ซอร์สโค้ดเฟิร์มแวร์ Arduino / megaTinyCore
 │   ├── esp32_usb_bridge/       # ตัวส่งสัญญาณ USB Bridge (ESP-NOW)
 │   ├── esp32_master_gateway/   # ตัวรับบนบอร์ดแม่ Master Gateway
-│   └── attiny1604_tile_controller/ # ตัวขับหลอดไฟประจำแผ่น ATtiny1604
+│   ├── attiny1604_tile_controller/ # ตัวขับหลอดไฟประจำแผ่น ATtiny1604
+│   └── esp32_rfid_addon/       # โมดูลอ่านการ์ด RFID Addon (ESP32 + RC522)
+├── production/                 # ไฟล์สั่งผลิตแผ่นวงจรพิมพ์ (Gerber, ZIP, CNC G-code)
+│   ├── fab_packages/           # ไฟล์ ZIP สำเร็จรูปสำหรับสั่งผลิต JLCPCB / PCBWay
+│   ├── master_gerbers/         # ไฟล์ Gerber & Drill บอร์ด Master
+│   ├── slave_gerbers/          # ไฟล์ Gerber & Drill บอร์ด Slave
+│   ├── cnc_master/             # ไฟล์สำหรับกัด CNC บอร์ด Master (FlatCAM & G-code)
+│   └── cnc_slave/              # ไฟล์สำหรับกัด CNC บอร์ด Slave
 ├── docs/                       # เอกสาร สรุปวงจร และไฟล์ Output
 │   ├── pdf/                    # master.pdf, slave.pdf
 │   ├── renders/                # ภาพ Render 3D และ SVG

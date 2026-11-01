@@ -1,14 +1,20 @@
 /*
  * ============================================================================
  * esp32_usb_bridge.ino
- * บอร์ดตัวส่งสัญญาณ (USB Bridge) เสียบสาย USB เข้ากับ Laptop / PC (Unity)
+ * บอร์ดตัวส่งและรับสัญญาณสองทิศทาง (Bi-Directional USB-to-ESP-NOW Bridge)
+ * เสียบสาย USB เข้ากับ Laptop / PC (Unity)
  * ============================================================================
  * หน้าที่:
- *   1. รับข้อมูลเฟรมสีตาราง 4x4 จาก Unity ผ่านพอร์ต Serial USB (115200 bps)
- *      - รองรับ Binary Protocol (53 ไบต์: 0xAA 0x55 + Type + FrameId + 48B RGB + CRC8)
- *      - รองรับ Text Command ผ่าน Serial Monitor (CLEAR, FILL, CORNER, TEST, FRAME)
- *   2. ส่งข้อมูลออกทางไร้สายด้วยโปรโตคอล ESP-NOW ไปยัง ESP32 บนบอร์ดแม่ (Master)
- *      - ค่าเริ่มต้นส่งแบบ Broadcast (FF:FF:FF:FF:FF:FF) ทำให้พร้อมใช้งานได้ทันที
+ *   1. ขาออก (Unity -> USB Serial -> ESP-NOW -> Master Board / Dummy):
+ *      - รับเฟรมสีตาราง 4x4 แบบ Binary (53 ไบต์: 0xAA 0x55 0x01 + FrameId + 48B RGB + CRC8)
+ *      - รับคำสั่งเกมจาก Unity เช่น "CMD /team Dummy1_Red", "CMD /led Dummy1_Turn"
+ *        แล้วแพ็กเป็น BoardEventPacket (0xAA 0x55 0x03, 53 ไบต์) ส่งออกทาง ESP-NOW
+ *      - รองรับ Text Command ทดสอบไฟ (CLEAR, FILL, CORNER, TEST, FRAME, MAC)
+ *   2. ขาเข้า (Master Board / RFID / Dice / Card Addon -> ESP-NOW -> USB Serial -> Unity):
+ *      - รับแพ็กเก็ต BoardEventPacket (0xAA 0x55 0x03, 53 ไบต์) จากบอร์ดกระดานหรือลูกเต๋า
+ *        ส่งออก Serial: "EVT <topic> <payload>\n" (เช่น "EVT /rfid Dummy1_A1", "EVT /dice 6")
+ *      - รับแพ็กเก็ต CardPacket (0xAA 0x55 0x10, 16 ไบต์) จากแท่นอ่านการ์ด esp32_rfid_addon
+ *        ส่งออก Serial: "EVT /card <addonId>_<UID>\n" (เช่น "EVT /card 1_DEADBEEF")
  * ============================================================================
  */
 
@@ -23,18 +29,20 @@
 #define SERIAL_BAUD     115200
 #define ESPNOW_CHANNEL  1
 
-// MAC Address ปลายทาง (บอร์ดแม่ Master)
-// ค่าเริ่มต้น: FF:FF:FF:FF:FF:FF (Broadcast ส่งหาบอร์ดแม่ในช่องสัญญาณเดียวกันทันที)
+// MAC Address ปลายทาง (บอร์ดแม่ Master / ตัวหมาก)
+// ค่าเริ่มต้น: FF:FF:FF:FF:FF:FF (Broadcast ส่งหาทุกบอร์ดในช่องสัญญาณเดียวกันทันที)
 uint8_t TARGET_MAC[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 
 // ============================================================================
-//                      PACKET STRUCTURE (53 BYTES)
+//                      PACKET STRUCTURES
 // ============================================================================
 #define PACKET_SIZE     53
 #define HEADER_BYTE_1   0xAA
 #define HEADER_BYTE_2   0x55
 #define PKT_TYPE_FRAME  0x01
 #define PKT_TYPE_TEST   0x02
+#define PKT_TYPE_EVENT  0x03
+#define PKT_TYPE_CARD   0x10
 
 #pragma pack(push, 1)
 struct BoardFramePacket {
@@ -44,6 +52,26 @@ struct BoardFramePacket {
     uint8_t frameId;        // Sequence / Frame ID
     uint8_t rgb[16][3];     // 16 cells x (R, G, B) = 48 bytes
     uint8_t crc;            // CRC-8 over pktType + frameId + rgb (50 bytes)
+};
+
+struct BoardEventPacket {
+    uint8_t header1;        // 0xAA
+    uint8_t header2;        // 0x55
+    uint8_t pktType;        // 0x03 = Game Event / Command (replaces MQTT)
+    uint8_t seqId;          // Sequence ID
+    char    topic[16];      // e.g. "/rfid", "/status", "/dice", "/fight", "/character", "/team", "/led"
+    char    payload[32];    // e.g. "Dummy1_A1", "Dummy1_InTag", "6", "4,2,6", "Dummy1_Red"
+    uint8_t crc;            // CRC-8 over pktType + seqId + topic + payload (50 bytes)
+};
+
+struct CardPacket {
+    uint8_t header1;        // 0xAA
+    uint8_t header2;        // 0x55
+    uint8_t pktType;        // 0x10 = RFID Card Tap Event (esp32_rfid_addon)
+    uint8_t addonId;        // ID โมดูล Addon (1..4)
+    uint8_t uidLength;      // ขนาด UID ของการ์ด (4, 7 หรือ 10 ไบต์)
+    uint8_t uid[10];        // ข้อมูล UID การ์ด
+    uint8_t crc;            // CRC-8 ครอบคลุม pktType..uid (13 ไบต์)
 };
 #pragma pack(pop)
 
@@ -56,6 +84,7 @@ unsigned long lastByteTime = 0;
 
 String cmdLine = "";
 uint8_t localFrameCounter = 0;
+uint8_t localEventCounter = 0;
 uint32_t txSuccessCount = 0;
 uint32_t txFailCount = 0;
 
@@ -98,6 +127,50 @@ void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, in
 #else
 void onDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
 #endif
+    // 1. ตรวจสอบว่าเป็นแพ็กเก็ต Event (PKT_TYPE_EVENT = 0x03) ขนาด 53 ไบต์จากบอร์ดกระดาน/ลูกเต๋าหรือไม่
+    if (len == sizeof(BoardEventPacket) &&
+        incomingData[0] == HEADER_BYTE_1 &&
+        incomingData[1] == HEADER_BYTE_2 &&
+        incomingData[2] == PKT_TYPE_EVENT) {
+
+        BoardEventPacket evPkt;
+        memcpy(&evPkt, incomingData, sizeof(BoardEventPacket));
+
+        uint8_t expectedCrc = calcCRC8(&evPkt.pktType, 50);
+        if (evPkt.crc == expectedCrc || evPkt.crc == 0xFF) {
+            evPkt.topic[sizeof(evPkt.topic) - 1] = '\0';
+            evPkt.payload[sizeof(evPkt.payload) - 1] = '\0';
+            // ส่งต่อเข้า Unity ทาง USB Serial ทันที
+            Serial.printf("EVT %s %s\n", evPkt.topic, evPkt.payload);
+        }
+        return;
+    }
+
+    // 2. ตรวจสอบว่าเป็นแพ็กเก็ตแตะการ์ด (PKT_TYPE_CARD = 0x10) ขนาด 16 ไบต์จาก esp32_rfid_addon หรือไม่
+    if (len == sizeof(CardPacket) &&
+        incomingData[0] == HEADER_BYTE_1 &&
+        incomingData[1] == HEADER_BYTE_2 &&
+        incomingData[2] == PKT_TYPE_CARD) {
+
+        CardPacket cardPkt;
+        memcpy(&cardPkt, incomingData, sizeof(CardPacket));
+
+        uint8_t expectedCrc = calcCRC8(&cardPkt.pktType, 13);
+        if (cardPkt.crc == expectedCrc || cardPkt.crc == 0xFF) {
+            String uidStr = "";
+            uint8_t ulen = (cardPkt.uidLength > 10) ? 10 : cardPkt.uidLength;
+            for (uint8_t i = 0; i < ulen; i++) {
+                if (cardPkt.uid[i] < 0x10) uidStr += "0";
+                uidStr += String(cardPkt.uid[i], HEX);
+            }
+            uidStr.toUpperCase();
+
+            // ส่งต่อเข้า Unity ทาง USB Serial: "EVT /card <addonId>_<UID>" เช่น "EVT /card 1_DEADBEEF"
+            Serial.printf("EVT /card %u_%s\n", cardPkt.addonId, uidStr.c_str());
+        }
+        return;
+    }
+
     Serial.print("[MASTER_ACK] MAC=");
     for (int i = 0; i < 6; i++) {
         if (i > 0) Serial.print(":");
@@ -109,7 +182,7 @@ void onDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
 }
 
 // ============================================================================
-//                      SEND PACKET OVER ESP-NOW
+//                      SEND PACKETS OVER ESP-NOW
 // ============================================================================
 void sendFrameEspNow(BoardFramePacket &pkt) {
     pkt.header1 = HEADER_BYTE_1;
@@ -125,8 +198,23 @@ void sendFrameEspNow(BoardFramePacket &pkt) {
     }
 }
 
+void sendEventEspNow(const char* topic, const char* payload) {
+    BoardEventPacket evPkt;
+    memset(&evPkt, 0, sizeof(evPkt));
+    evPkt.header1 = HEADER_BYTE_1;
+    evPkt.header2 = HEADER_BYTE_2;
+    evPkt.pktType = PKT_TYPE_EVENT;
+    evPkt.seqId   = ++localEventCounter;
+
+    strncpy(evPkt.topic, topic, sizeof(evPkt.topic) - 1);
+    strncpy(evPkt.payload, payload, sizeof(evPkt.payload) - 1);
+    evPkt.crc = calcCRC8(&evPkt.pktType, 50);
+
+    esp_now_send(TARGET_MAC, (const uint8_t*)&evPkt, sizeof(BoardEventPacket));
+}
+
 // ============================================================================
-//              PARSE TEXT COMMANDS (FOR MANUAL SERIAL TESTING)
+//              PARSE TEXT COMMANDS (FROM UNITY OR SERIAL MONITOR)
 // ============================================================================
 void handleTextCommand(String line) {
     line.trim();
@@ -137,6 +225,39 @@ void handleTextCommand(String line) {
         Serial.print(WiFi.macAddress());
         Serial.printf(" | Channel: %d | TX_OK: %lu | TX_FAIL: %lu\n",
                       ESPNOW_CHANNEL, (unsigned long)txSuccessCount, (unsigned long)txFailCount);
+        return;
+    }
+
+    // 1. คำสั่งเกมจาก Unity ส่งต่อไปยังบอร์ด/หมากผ่าน ESP-NOW: "CMD <topic> <payload>"
+    //    เช่น "CMD /team Dummy1_Red" หรือ "CMD /led Dummy1_Turn"
+    if (line.startsWith("CMD ") || line.startsWith("cmd ")) {
+        String rest = line.substring(4);
+        rest.trim();
+        int sp = rest.indexOf(' ');
+        if (sp > 0) {
+            String topic = rest.substring(0, sp);
+            String payload = rest.substring(sp + 1);
+            topic.trim();
+            payload.trim();
+            sendEventEspNow(topic.c_str(), payload.c_str());
+        } else if (rest.length() > 0) {
+            sendEventEspNow(rest.c_str(), "");
+        }
+        return;
+    }
+
+    // 2. คำสั่งจำลอง Event ขาเข้า Unity (สำหรับพิมพ์ทดสอบใน Serial): "EVT <topic> <payload>"
+    if (line.startsWith("EVT ") || line.startsWith("evt ")) {
+        String rest = line.substring(4);
+        rest.trim();
+        Serial.print("EVT ");
+        Serial.println(rest);
+        return;
+    }
+
+    // 3. จำลองการแตะการ์ดจาก Serial Monitor: "TEST_CARD"
+    if (line.equalsIgnoreCase("TEST_CARD")) {
+        Serial.println("EVT /card 1_DEADBEEF");
         return;
     }
 
@@ -251,10 +372,11 @@ void setup() {
     }
 
     Serial.println("======================================================");
-    Serial.println(" ESP32 USB-to-ESP-NOW Bridge Ready (4x4 Board Game)");
-    Serial.print  (" Sender MAC : ");
+    Serial.println(" ESP32 Bi-Directional USB-to-ESP-NOW Bridge Ready");
+    Serial.print  (" Bridge MAC : ");
     Serial.println(WiFi.macAddress());
-    Serial.println(" Commands   : MAC, CLEAR, CORNER, TEST, FILL r g b");
+    Serial.println(" Commands   : MAC, CLEAR, CORNER, TEST, TEST_CARD, FILL r g b");
+    Serial.println(" Game Cmds  : CMD <topic> <payload> | EVT <topic> <payload>");
     Serial.println("======================================================");
 }
 

@@ -1,0 +1,38 @@
+# ==============================================================================
+# FlatCAM Automation Script for Slave Board (TCL Script)
+# โครงการ: Modular Smart Board Game V1 - Slave Board
+# ==============================================================================
+# คำแนะนำการใช้งาน:
+# 1. เปิดโปรแกรม FlatCAM
+# 2. ไปที่เมนู File -> Run Script (หรือกด Ctrl + Shift + R)
+# 3. เลือกไฟล์นี้ (generate_slave_gcode.FlatScript)
+# ระบบจะ Generate ไฟล์ G-code ครบทุกเลเยอร์แล้วเซฟลงโฟลเดอร์ gcode/ อัตโนมัติทันที
+# ==============================================================================
+
+set base_dir "F:/board game/production/cnc_slave"
+set out_dir "F:/board game/production/cnc_slave/gcode"
+
+# 1. ประมวลผลเลเยอร์ลายทองแดงหน้าบน (F_Cu)
+open_gerber "$base_dir/slave-F_Cu.gtl" -outname slave_top
+isolate slave_top -dia 0.1 -passes 1 -overlap 10 -combine 1 -outname slave_top_iso
+cncjob slave_top_iso -dia 0.1 -z_cut -0.05 -z_move 2.0 -feedrate 120.0 -feedrate_z 60.0 -spindlespeed 1200 -outname slave_top_cnc
+write_gcode slave_top_cnc "$out_dir/slave_top_iso.nc"
+
+# 2. ประมวลผลเลเยอร์ลายทองแดงหน้าล่าง (B_Cu - Mirror แกน X)
+open_gerber "$base_dir/slave-B_Cu.gbl" -outname slave_bot
+mirror slave_bot -axis X -box slave_top
+isolate slave_bot -dia 0.1 -passes 1 -overlap 10 -combine 1 -outname slave_bot_iso
+cncjob slave_bot_iso -dia 0.1 -z_cut -0.05 -z_move 2.0 -feedrate 120.0 -feedrate_z 60.0 -spindlespeed 1200 -outname slave_bot_cnc
+write_gcode slave_bot_cnc "$out_dir/slave_bot_iso.nc"
+
+# 3. ประมวลผลรูเจาะ (PTH Drills)
+open_excellon "$base_dir/slave-PTH.drl" -outname slave_drill
+drillcncjob slave_drill -drillz -1.8 -travelz 2.0 -feedrate_z 120.0 -spindlespeed 1200 -outname slave_drill_cnc
+write_gcode slave_drill_cnc "$out_dir/slave_drills.nc"
+
+# 4. ประมวลผลตัดขอบแผ่น (Edge Cuts)
+open_gerber "$base_dir/slave-Edge_Cuts.gm1" -outname slave_edge
+cutout slave_edge -dia 1.0 -margin 0.0 -gapsize 2.0 -gaps 4 -outname slave_cutout_geom
+cncjob slave_cutout_geom -dia 1.0 -z_cut -1.8 -z_move 2.0 -feedrate 120.0 -feedrate_z 60.0 -spindlespeed 1200 -dpp 0.45 -outname slave_cutout_cnc
+write_gcode slave_cutout_cnc "$out_dir/slave_cutout.nc"
+
