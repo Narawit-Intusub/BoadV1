@@ -36,15 +36,19 @@ board game/
 │   │   ├── rfid_addon.kicad_sch
 │   │   ├── sym-lib-table
 │   │   └── fp-lib-table
-│   └── libraries/              # Custom Symbols & Footprints รวมของโครงการ
-│       ├── esp32-wemos-d1-mini/
-│       ├── magnetic-connector/
-│       ├── ws2812-matrix-2x2/
-│       └── board_game_v1-cache.lib
+│   ├── libraries/              # Custom Symbols & Footprints รวมของโครงการ
+│   │   ├── esp32-wemos-d1-mini/
+│   │   ├── magnetic-connector/
+│   │   ├── ws2812-matrix-2x2/
+│   │   └── board_game_v1-cache.lib
+│   └── experimental/           # โมเดลทดลอง / ทางเลือก (ESP32-only standalone variants)
+│       ├── master_esp32/       # บอร์ดแม่แบบขับตรงด้วย ESP32 (ตัด ATtiny1604)
+│       └── slave_esp32/        # บอร์ดลูกแบบใช้ ESP32 ประจำแผ่น
 ├── firmware/                   # ซอร์สโค้ดเฟิร์มแวร์ Arduino / megaTinyCore
 │   ├── esp32_usb_bridge/       # ตัวส่งสัญญาณ USB Bridge (ESP-NOW)
 │   ├── esp32_master_gateway/   # ตัวรับบนบอร์ดแม่ Master Gateway
-│   ├── attiny1604_tile_controller/ # ตัวขับหลอดไฟประจำแผ่น ATtiny1604
+│   ├── attiny1604_master/      # เฟิร์มแวร์เฉพาะบอร์ดแม่ ATtiny1604 (ID 0)
+│   ├── attiny1604_slave/       # เฟิร์มแวร์บอร์ดลูก ATtiny1604 (Daisy-Chain Auto-Addressing)
 │   └── esp32_rfid_addon/       # โมดูลอ่านการ์ด RFID Addon (ESP32 + RC522)
 ├── production/                 # ไฟล์สั่งผลิตแผ่นวงจรพิมพ์ (Gerber, ZIP, CNC G-code)
 │   ├── fab_packages/           # ไฟล์ ZIP สำเร็จรูปสำหรับสั่งผลิต JLCPCB / PCBWay

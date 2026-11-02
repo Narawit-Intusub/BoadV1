@@ -3,10 +3,14 @@
  * esp32_usb_bridge.ino
  * บอร์ดตัวส่งและรับสัญญาณสองทิศทาง (Bi-Directional USB-to-ESP-NOW Bridge)
  * เสียบสาย USB เข้ากับ Laptop / PC (Unity)
+ * โครงการ Modular Smart Board Game V1
  * ============================================================================
  * หน้าที่:
- *   1. ขาออก (Unity -> USB Serial -> ESP-NOW -> Master Board / Dummy):
+ *   1. ขาออก (Unity -> USB Serial -> ESP-NOW -> Master Board / Addons):
  *      - รับเฟรมสีตาราง 4x4 แบบ Binary (53 ไบต์: 0xAA 0x55 0x01 + FrameId + 48B RGB + CRC8)
+ *      - รับเฟรมสีแบบหลายแผ่น (Scalable N-Tiles):
+ *        * PKT_TYPE_TILE_CHUNK (0x04, 53 ไบต์): ข้อมูลสี 16 ช่องของ Tile ID นั้นๆ
+ *        * PKT_TYPE_COMMIT_ALL (0x05, 53 ไบต์): คำสั่ง Latch สีพร้อมกันทุกแผ่น
  *      - รับคำสั่งเกมจาก Unity เช่น "CMD /team Dummy1_Red", "CMD /led Dummy1_Turn"
  *        แล้วแพ็กเป็น BoardEventPacket (0xAA 0x55 0x03, 53 ไบต์) ส่งออกทาง ESP-NOW
  *      - รองรับ Text Command ทดสอบไฟ (CLEAR, FILL, CORNER, TEST, FRAME, MAC)
@@ -36,13 +40,15 @@ uint8_t TARGET_MAC[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 // ============================================================================
 //                      PACKET STRUCTURES
 // ============================================================================
-#define PACKET_SIZE     53
-#define HEADER_BYTE_1   0xAA
-#define HEADER_BYTE_2   0x55
-#define PKT_TYPE_FRAME  0x01
-#define PKT_TYPE_TEST   0x02
-#define PKT_TYPE_EVENT  0x03
-#define PKT_TYPE_CARD   0x10
+#define PACKET_SIZE         53
+#define HEADER_BYTE_1       0xAA
+#define HEADER_BYTE_2       0x55
+#define PKT_TYPE_FRAME        0x01
+#define PKT_TYPE_TEST         0x02
+#define PKT_TYPE_EVENT        0x03
+#define PKT_TYPE_TILE_CHUNK   0x04
+#define PKT_TYPE_COMMIT_ALL   0x05
+#define PKT_TYPE_CARD         0x10
 
 #pragma pack(push, 1)
 struct BoardFramePacket {
@@ -52,6 +58,25 @@ struct BoardFramePacket {
     uint8_t frameId;        // Sequence / Frame ID
     uint8_t rgb[16][3];     // 16 cells x (R, G, B) = 48 bytes
     uint8_t crc;            // CRC-8 over pktType + frameId + rgb (50 bytes)
+};
+
+struct TileChunkPacket {
+    uint8_t header1;        // 0xAA
+    uint8_t header2;        // 0x55
+    uint8_t pktType;        // 0x04 = Scalable Tile Chunk
+    uint8_t tileId;         // Tile ID: 0 (Master), 1..N (Slaves)
+    uint8_t rgb[16][3];     // 16 cells x (R, G, B) = 48 bytes
+    uint8_t crc;            // CRC-8 over pktType + tileId + rgb (50 bytes)
+};
+
+struct TileCommitPacket {
+    uint8_t header1;        // 0xAA
+    uint8_t header2;        // 0x55
+    uint8_t pktType;        // 0x05 = Synchronous Commit
+    uint8_t frameId;        // Frame Sequence ID (0..255)
+    uint8_t totalTiles;     // Total Tiles in this frame (e.g. 4, 6, 8)
+    uint8_t padding[46];    // 0x00 padding to 53 bytes
+    uint8_t crc;            // CRC-8 over pktType + frameId + totalTiles + padding (50 bytes)
 };
 
 struct BoardEventPacket {
@@ -246,6 +271,13 @@ void handleTextCommand(String line) {
         return;
     }
 
+    // สั่งแจก ID ใหม่ไปยังบอร์ดแม่ผ่านคลื่นวิทยุ ESP-NOW (สั่งจากหน้าจอคอมได้ทันที)
+    if (line.equalsIgnoreCase("RESCAN") || line.equalsIgnoreCase("ADDR") || line.equalsIgnoreCase("SET_ID")) {
+        sendEventEspNow("/rescan", "1");
+        Serial.println("[BRIDGE] Dispatched wireless RESCAN command to Master Board via ESP-NOW");
+        return;
+    }
+
     // 2. คำสั่งจำลอง Event ขาเข้า Unity (สำหรับพิมพ์ทดสอบใน Serial): "EVT <topic> <payload>"
     if (line.startsWith("EVT ") || line.startsWith("evt ")) {
         String rest = line.substring(4);
@@ -349,7 +381,7 @@ void setup() {
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
 
-    // ล็อก Wi-Fi Channel ให้ตรงกับบอร์ดแม่
+    // ล็อค Wi-Fi Channel ให้ตรงกับบอร์ดแม่
     esp_wifi_set_promiscuous(true);
     esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
     esp_wifi_set_promiscuous(false);
@@ -424,6 +456,11 @@ void loop() {
                 uint8_t expectedCrc = calcCRC8(&pkt.pktType, 50);
                 if (pkt.crc == expectedCrc || pkt.crc == 0xFF) {
                     esp_now_send(TARGET_MAC, (const uint8_t*)&pkt, sizeof(BoardFramePacket));
+                    if (pkt.pktType == PKT_TYPE_TILE_CHUNK) {
+                        Serial.printf("[CHUNK] Forwarded tileId=%u via ESP-NOW\n", pkt.frameId);
+                    } else if (pkt.pktType == PKT_TYPE_COMMIT_ALL) {
+                        Serial.printf("[COMMIT] Forwarded commit frameId=%u via ESP-NOW\n", pkt.frameId);
+                    }
                 } else {
                     Serial.printf("[CRC_ERR] recv=0x%02X expected=0x%02X\n", pkt.crc, expectedCrc);
                 }

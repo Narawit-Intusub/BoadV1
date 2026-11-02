@@ -33,3 +33,5 @@ skills/
 analysis/
 temp/
 ex/
+__pycache__/
+*.pyc
