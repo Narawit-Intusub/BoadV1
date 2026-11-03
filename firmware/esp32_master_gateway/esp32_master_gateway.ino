@@ -26,7 +26,6 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
-#include <Adafruit_NeoPixel.h>
 
 // ============================================================================
 //                         HARDWARE CONFIGURATION
@@ -46,6 +45,10 @@
 // true  = ส่งข้อมูลผ่าน UART ไปให้ ATtiny1604 ขับไฟ (สำหรับบอร์ดจริง hardware/master)
 // false = ขับไฟ WS2812B ตรงจาก ESP32 ขา GPIO 18 (สำหรับบอร์ดทดลอง hardware/experimental/master_esp32)
 #define USE_ATTINY_UART_DRIVER   true
+
+#if (!USE_ATTINY_UART_DRIVER)
+#include <Adafruit_NeoPixel.h>
+#endif
 
 // ขา UART สำหรับสื่อสารกับ ATtiny1604 ประจำแผ่นกระดาน (Serial2 ตามวงจรจริง)
 #define TILE_UART_BAUD      115200
@@ -76,6 +79,7 @@ uint8_t BRIDGE_MAC[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 #define PKT_TYPE_EVENT        0x03
 #define PKT_TYPE_TILE_CHUNK   0x04
 #define PKT_TYPE_COMMIT_ALL   0x05
+#define PKT_TYPE_CARD         0x10
 
 // ============================================================================
 //               TILE UART PROTOCOL CONSTANTS (TO ATTINY1604)
@@ -89,7 +93,9 @@ uint8_t BRIDGE_MAC[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 #define BROADCAST_DEST_ID   0xFF
 #define DEFAULT_TTL         16      // ขยายรองรับสูงสุด 16 แผ่นตามแนวทาง N-Tiles Scalability
 
+#if (!USE_ATTINY_UART_DRIVER)
 Adafruit_NeoPixel strip(TOTAL_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+#endif
 
 #pragma pack(push, 1)
 struct BoardFramePacket {
@@ -129,6 +135,16 @@ struct BoardEventPacket {
     char    payload[32];    // e.g. "Dummy1_A1", "Dummy1_InTag", "6", "4,2,6", "Dummy1_Red"
     uint8_t crc;            // CRC-8 over pktType + seqId + topic + payload (50 bytes)
 };
+
+struct CardPacket {
+    uint8_t header1;        // 0xAA
+    uint8_t header2;        // 0x55
+    uint8_t pktType;        // 0x10 = RFID Card Tap Event (esp32_rfid_addon)
+    uint8_t addonId;        // ID โมดูล Addon (1..4)
+    uint8_t uidLength;      // ขนาด UID ของการ์ด (4, 7 หรือ 10 ไบต์)
+    uint8_t uid[10];        // ข้อมูล UID การ์ด
+    uint8_t crc;            // CRC-8 ครอบคลุม pktType..uid (13 ไบต์)
+};
 #pragma pack(pop)
 
 // ============================================================================
@@ -142,6 +158,13 @@ volatile uint8_t lastFrameId = 0;
 volatile uint32_t rxFrameCount = 0;
 uint8_t tileSeqCounter = 0;
 uint8_t eventSeqCounter = 0;
+uint8_t currentMaxBrightness = MAX_CHANNEL_VAL; // ปรับค่าได้แบบ Real-time ผ่านคำสั่ง /bright โดยไม่ต้องแฟลช ATtiny1604 ใหม่
+
+// Lock-free Ring Buffer สำหรับพักแพ็กเก็ตจาก ESP-NOW Callback (ป้องกัน Wi-Fi Task ค้างหรือชนกับ UART)
+#define ESPNOW_RX_QUEUE_SIZE 32
+BoardFramePacket espNowRxQueue[ESPNOW_RX_QUEUE_SIZE];
+volatile uint8_t espNowRxHead = 0;
+volatile uint8_t espNowRxTail = 0;
 
 // สำหรับรับข้อมูลทาง USB Serial โดยตรง (กรณีต่อสาย USB เข้าบอร์ดแม่โดยตรง)
 uint8_t serialRxBuf[PACKET_SIZE];
@@ -168,6 +191,49 @@ uint8_t calcCRC8(const uint8_t* data, size_t len) {
 }
 
 // ============================================================================
+//       BRIGHTNESS SCALING & COORDINATE MAPPING (LOGICAL -> MOD1..16)
+// ============================================================================
+// ย่อสัดส่วนความสว่างสูงสุดไม่ให้เกิน currentMaxBrightness (ค่าเริ่มต้น 120/255) โดยคงอัตราส่วนแม่สี R:G:B เดิมไว้
+inline void scaleColorToMaxBrightness(uint8_t &r, uint8_t &g, uint8_t &b) {
+    uint8_t maxComp = max(r, max(g, b));
+    if (maxComp > currentMaxBrightness && maxComp > 0) {
+        r = (uint8_t)((uint16_t)r * currentMaxBrightness / maxComp);
+        g = (uint8_t)((uint16_t)g * currentMaxBrightness / maxComp);
+        b = (uint8_t)((uint16_t)b * currentMaxBrightness / maxComp);
+    }
+}
+
+int mapLogicalCellToHardwareMod(int logicalIndex) {
+    int x = logicalIndex % 4;
+    int y = logicalIndex / 4;
+
+    if (FLIP_Y_AXIS) {
+        y = 3 - y;
+    }
+
+    if (SERPENTINE_WIRING && (y % 2 == 1)) {
+        x = 3 - x;
+    }
+
+    return y * 4 + x;
+}
+
+// ฟังก์ชันกลางสำหรับแปลงพิกัด Logical 16 ช่อง เป็นตำแหน่งหลอดบน PCB จริง พร้อมจำกัดความสว่างในจุดเดียว
+void mapAndScaleLogicalGrid(const uint8_t srcLogical[16][3], uint8_t dstHardware[16][3]) {
+    for (int i = 0; i < NUM_CELLS; i++) {
+        uint8_t r = srcLogical[i][0];
+        uint8_t g = srcLogical[i][1];
+        uint8_t b = srcLogical[i][2];
+        scaleColorToMaxBrightness(r, g, b);
+
+        int hwIdx = mapLogicalCellToHardwareMod(i);
+        dstHardware[hwIdx][0] = r;
+        dstHardware[hwIdx][1] = g;
+        dstHardware[hwIdx][2] = b;
+    }
+}
+
+// ============================================================================
 //          SEND GAME EVENT TO UNITY (VIA ESP-NOW & DIRECT SERIAL)
 // ============================================================================
 void sendEventToUnity(const char* topic, const char* payload) {
@@ -187,6 +253,14 @@ void sendEventToUnity(const char* topic, const char* payload) {
 
     // 2. พิมพ์ออกทาง Serial ด้วย (กรณีต่อสาย USB เข้าบอร์ดแม่โดยตรงกับ Unity)
     Serial.printf("EVT %s %s\n", evPkt.topic, evPkt.payload);
+}
+
+void announceMasterConnectedOnce() {
+    static bool hasAnnouncedMaster = false;
+    if (!hasAnnouncedMaster) {
+        hasAnnouncedMaster = true;
+        sendEventToUnity("/master", "connected");
+    }
 }
 
 // ============================================================================
@@ -210,18 +284,28 @@ void sendTilePacketUART(uint8_t pktType, uint8_t destId, uint8_t frameNum, const
         Serial2.write(payload, payloadLen);
     }
     Serial2.write(crc);
+
+    // พิมพ์ Debug Log เพื่อช่วยเช็คการทำงานของสาย UART และ Level Converter
+    Serial.printf("[UART_TX -> ATTINY] PktType=0x%02X Dest=%u Seq=%u Len=%u CRC=0x%02X\n",
+                  pktType, destId, header[4], payloadLen, crc);
 }
 
 // ฟังก์ชันสั่งแจก ID ใหม่อัตโนมัติแบบลูกโซ่ (0..N)
 void triggerAutoAddressing() {
     uint8_t startId = 0;
-    sendTilePacketUART(TILE_PKT_SET_ID, 0xFF, 0, &startId, 1);
     Serial.println("[AUTO_ADDR] Dispatched initial Tile ID assignment (0..N)");
+    sendTilePacketUART(TILE_PKT_SET_ID, 0xFF, 0, &startId, 1);
+}
+
+// ฟังก์ชันยิง Ping ไปทักทาย ATtiny1604 (PKT_HELLO 0x01) เพื่อเช็คการเชื่อมต่อ
+void pingTileMaster() {
+    Serial.println("[PING] Sending PKT_HELLO (0x01) to Master ATtiny1604...");
+    sendTilePacketUART(TILE_PKT_HELLO, 0x00, 0, nullptr, 0);
 }
 
 // ส่งข้อมูลสี 48 ไบต์เข้า Back Buffer ของ ATtiny1604 แล้วสั่ง Latch ด้วย PKT_FRAME_COMMIT
-void forwardFrameToTiles(uint8_t frameNum, const uint8_t scaledRgb[16][3]) {
-    sendTilePacketUART(TILE_PKT_DATA, 0x00, frameNum, (const uint8_t*)scaledRgb, 48);
+void forwardFrameToTiles(uint8_t frameNum, const uint8_t hwScaledRgb[16][3]) {
+    sendTilePacketUART(TILE_PKT_DATA, 0x00, frameNum, (const uint8_t*)hwScaledRgb, 48);
     sendTilePacketUART(TILE_PKT_COMMIT, BROADCAST_DEST_ID, frameNum, nullptr, 0);
 }
 
@@ -229,58 +313,21 @@ void forwardFrameToTiles(uint8_t frameNum, const uint8_t scaledRgb[16][3]) {
 //                      ON-BOARD WS2812B LED DRIVER
 // ============================================================================
 void showLEDs() {
-    uint8_t scaledBuffer[16][3];
-
+#if (USE_ATTINY_UART_DRIVER)
+    // [โหมดบอร์ดจริง V1]: ส่งข้อมูล UART (Serial2) ให้ ATtiny1604 ขับไฟ (activeBuffer ถูกสเกลสีแล้ว)
+    forwardFrameToTiles(lastFrameId, activeBuffer);
+#else
+    // [โหมดบอร์ดทดลอง]: ยิงพัลส์ Latch ขับหลอดไฟ 64 ดวงตรงจาก ESP32 GPIO 18
     for (int cell = 0; cell < NUM_CELLS; cell++) {
         uint8_t r = activeBuffer[cell][0];
         uint8_t g = activeBuffer[cell][1];
         uint8_t b = activeBuffer[cell][2];
-
-        // ย่อสัดส่วนความสว่างสูงสุดไม่ให้เกิน MAX_CHANNEL_VAL (120/255) โดยคงอัตราส่วนแม่สี R:G:B เดิมไว้
-        uint8_t maxComp = max(r, max(g, b));
-        if (maxComp > MAX_CHANNEL_VAL) {
-            r = (uint8_t)((uint16_t)r * MAX_CHANNEL_VAL / maxComp);
-            g = (uint8_t)((uint16_t)g * MAX_CHANNEL_VAL / maxComp);
-            b = (uint8_t)((uint16_t)b * MAX_CHANNEL_VAL / maxComp);
-        }
-
-        scaledBuffer[cell][0] = r;
-        scaledBuffer[cell][1] = g;
-        scaledBuffer[cell][2] = b;
-
-#if (!USE_ATTINY_UART_DRIVER)
-        // [โหมดบอร์ดทดลอง ESP32]: ESP32 ขับไฟตรงออก GPIO 18
         for (int led = 0; led < LEDS_PER_CELL; led++) {
             strip.setPixelColor(cell * LEDS_PER_CELL + led, strip.Color(r, g, b));
         }
-#endif
     }
-
-#if (USE_ATTINY_UART_DRIVER)
-    // [โหมดบอร์ดจริง V1]: ส่งข้อมูล UART (Serial2) ให้ ATtiny1604 ขับไฟ
-    forwardFrameToTiles(lastFrameId, scaledBuffer);
-#else
-    // [โหมดบอร์ดทดลอง]: ยิงพัลส์ Latch ขับหลอดไฟ 64 ดวงตรงจาก ESP32 GPIO 18
     strip.show();
 #endif
-}
-
-// ============================================================================
-//                   COORDINATE MAPPING (LOGICAL -> MOD1..16)
-// ============================================================================
-int mapLogicalCellToHardwareMod(int logicalIndex) {
-    int x = logicalIndex % 4;
-    int y = logicalIndex / 4;
-
-    if (FLIP_Y_AXIS) {
-        y = 3 - y;
-    }
-
-    if (SERPENTINE_WIRING && (y % 2 == 1)) {
-        x = 3 - x;
-    }
-
-    return y * 4 + x;
 }
 
 // ============================================================================
@@ -301,13 +348,31 @@ void processEventPacket(const BoardEventPacket &ev) {
     safeTopic[sizeof(safeTopic) - 1] = '\0';
     safePayload[sizeof(safePayload) - 1] = '\0';
 
+    if (strcmp(safeTopic, "/card") == 0) {
+        // ส่งต่ออีเวนต์แตะการ์ดออกทาง USB Serial (รองรับกรณีต่อสาย USB เข้าบอร์ดแม่โดยตรง)
+        Serial.printf("EVT /card %s\n", safePayload);
+        return;
+    }
+
     Serial.printf("[CMD_RECV] topic=%s payload=%s\n", safeTopic, safePayload);
 
-    // หากเป็นคำสั่งสั่งแจก ID ใหม่จาก Unity หรือ USB Bridge ผ่าน ESP-NOW
-    if (strcmp(safeTopic, "/rescan") == 0 || strcmp(safeTopic, "rescan") == 0 ||
-        strcmp(safeTopic, "/addr") == 0 || strcmp(safeTopic, "addr") == 0) {
-        triggerAutoAddressing();
+    if (strcmp(safeTopic, "/bright") == 0) {
+        int val = atoi(safePayload);
+        if (val >= 1 && val <= 220) {
+            currentMaxBrightness = (uint8_t)val;
+            Serial.printf("[BRIGHTNESS] Updated currentMaxBrightness = %u/255\n", currentMaxBrightness);
+        }
+        return;
     }
+
+    #if (USE_ATTINY_UART_DRIVER)
+    // รองรับคำสั่งสั่งแจก ID ใหม่อัตโนมัติทางวิทยุ ESP-NOW จาก USB Bridge
+    if (strcmp(safeTopic, "/rescan") == 0 || strcmp(safeTopic, "/addr") == 0 || strcmp(safeTopic, "/set_id") == 0) {
+        triggerAutoAddressing();
+    } else if (strcmp(safeTopic, "/ping") == 0) {
+        pingTileMaster();
+    }
+    #endif
 }
 
 void processPacket(const BoardFramePacket &pkt) {
@@ -332,12 +397,8 @@ void processPacket(const BoardFramePacket &pkt) {
 
     // 1. แพ็กเก็ตเฟรมเดี่ยว (4x4) แบบดั้งเดิม
     if (pkt.pktType == PKT_TYPE_FRAME) {
-        for (int i = 0; i < NUM_CELLS; i++) {
-            int hwIdx = mapLogicalCellToHardwareMod(i);
-            backBuffer[hwIdx][0] = pkt.rgb[i][0];
-            backBuffer[hwIdx][1] = pkt.rgb[i][1];
-            backBuffer[hwIdx][2] = pkt.rgb[i][2];
-        }
+        announceMasterConnectedOnce();
+        mapAndScaleLogicalGrid(pkt.rgb, backBuffer);
         memcpy(activeBuffer, backBuffer, sizeof(activeBuffer));
         lastFrameId = pkt.frameId;
         rxFrameCount++;
@@ -347,34 +408,12 @@ void processPacket(const BoardFramePacket &pkt) {
 
     // 2. แพ็กเก็ตชังก์สีสำหรับระบบหลายแผ่น (Scalable N-Tiles)
     if (pkt.pktType == PKT_TYPE_TILE_CHUNK) {
+        announceMasterConnectedOnce();
         TileChunkPacket chunk;
         memcpy(&chunk, &pkt, sizeof(TileChunkPacket));
 
-        // จำกัดความสว่างไม่เกิน MAX_CHANNEL_VAL (120)
-        uint8_t scaledRgb[16][3];
-        for (int i = 0; i < NUM_CELLS; i++) {
-            uint8_t r = chunk.rgb[i][0];
-            uint8_t g = chunk.rgb[i][1];
-            uint8_t b = chunk.rgb[i][2];
-            uint8_t maxComp = max(r, max(g, b));
-            if (maxComp > MAX_CHANNEL_VAL) {
-                r = (uint8_t)((uint16_t)r * MAX_CHANNEL_VAL / maxComp);
-                g = (uint8_t)((uint16_t)g * MAX_CHANNEL_VAL / maxComp);
-                b = (uint8_t)((uint16_t)b * MAX_CHANNEL_VAL / maxComp);
-            }
-            scaledRgb[i][0] = r;
-            scaledRgb[i][1] = g;
-            scaledRgb[i][2] = b;
-        }
-
-        // แปลงพิกัดทางตรรกะ (Logical) เป็นตำแหน่งหลอดบน PCB จริง (MOD1..MOD16)
         uint8_t mappedChunk[NUM_CELLS][3];
-        for (int i = 0; i < NUM_CELLS; i++) {
-            int hwIdx = mapLogicalCellToHardwareMod(i);
-            mappedChunk[hwIdx][0] = scaledRgb[i][0];
-            mappedChunk[hwIdx][1] = scaledRgb[i][1];
-            mappedChunk[hwIdx][2] = scaledRgb[i][2];
-        }
+        mapAndScaleLogicalGrid(chunk.rgb, mappedChunk);
 
         if (chunk.tileId == 0) {
             // Master Tile: บันทึกข้อมูลลง backBuffer ของบอร์ดแม่
@@ -394,6 +433,7 @@ void processPacket(const BoardFramePacket &pkt) {
 
     // 3. แพ็กเก็ตยืนยันเฟรมแบบซิงโครนัสพร้อมกันทุกแผ่น (Commit All)
     if (pkt.pktType == PKT_TYPE_COMMIT_ALL) {
+        announceMasterConnectedOnce();
         TileCommitPacket cmt;
         memcpy(&cmt, &pkt, sizeof(TileCommitPacket));
         lastFrameId = cmt.frameId;
@@ -413,7 +453,7 @@ void processPacket(const BoardFramePacket &pkt) {
 }
 
 // ============================================================================
-//                       ESP-NOW RECEIVE CALLBACK
+//               ESP-NOW RECEIVE CALLBACK (NON-BLOCKING RING BUFFER)
 // ============================================================================
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
 void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, int len) {
@@ -421,9 +461,46 @@ void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, in
 void onDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
 #endif
     if (len == sizeof(BoardFramePacket)) {
-        BoardFramePacket pkt;
-        memcpy(&pkt, incomingData, sizeof(BoardFramePacket));
-        processPacket(pkt);
+        uint8_t nextHead = (uint8_t)((espNowRxHead + 1) % ESPNOW_RX_QUEUE_SIZE);
+        if (nextHead != espNowRxTail) {
+            memcpy((void*)&espNowRxQueue[espNowRxHead], incomingData, sizeof(BoardFramePacket));
+            espNowRxHead = nextHead;
+        }
+        return;
+    }
+
+    // รองรับการรับแพ็กเก็ตแตะการ์ด (16 ไบต์) จาก esp32_rfid_addon โดยตรง
+    if (len == sizeof(CardPacket) &&
+        incomingData[0] == HEADER_BYTE_1 &&
+        incomingData[1] == HEADER_BYTE_2 &&
+        incomingData[2] == PKT_TYPE_CARD) {
+        CardPacket cardPkt;
+        memcpy(&cardPkt, incomingData, sizeof(CardPacket));
+        uint8_t expectedCrc = calcCRC8(&cardPkt.pktType, 13);
+        if (cardPkt.crc == expectedCrc || cardPkt.crc == 0xFF) {
+            BoardEventPacket evPkt;
+            memset(&evPkt, 0, sizeof(evPkt));
+            evPkt.header1 = HEADER_BYTE_1;
+            evPkt.header2 = HEADER_BYTE_2;
+            evPkt.pktType = PKT_TYPE_EVENT;
+            evPkt.seqId   = cardPkt.addonId;
+            strcpy(evPkt.topic, "/card");
+
+            char hexBuf[32];
+            int pos = snprintf(hexBuf, sizeof(hexBuf), "%u_", cardPkt.addonId);
+            uint8_t ulen = (cardPkt.uidLength > 10) ? 10 : cardPkt.uidLength;
+            for (uint8_t i = 0; i < ulen && (pos + 2) < (int)sizeof(hexBuf); i++) {
+                pos += snprintf(hexBuf + pos, sizeof(hexBuf) - pos, "%02X", cardPkt.uid[i]);
+            }
+            strncpy(evPkt.payload, hexBuf, sizeof(evPkt.payload) - 1);
+            evPkt.crc = 0xFF;
+
+            uint8_t nextHead = (uint8_t)((espNowRxHead + 1) % ESPNOW_RX_QUEUE_SIZE);
+            if (nextHead != espNowRxTail) {
+                memcpy((void*)&espNowRxQueue[espNowRxHead], &evPkt, sizeof(BoardFramePacket));
+                espNowRxHead = nextHead;
+            }
+        }
     }
 }
 
@@ -432,6 +509,7 @@ void onDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
 // ============================================================================
 void setCellColorLogical(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
     if (x < 0 || x >= 4 || y < 0 || y >= 4) return;
+    scaleColorToMaxBrightness(r, g, b);
     int logicalIdx = y * 4 + x;
     int hwIdx = mapLogicalCellToHardwareMod(logicalIdx);
     activeBuffer[hwIdx][0] = r;
@@ -440,18 +518,28 @@ void setCellColorLogical(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
 }
 
 void clearAllCells() {
+    memset(backBuffer, 0, sizeof(backBuffer));
     memset(activeBuffer, 0, sizeof(activeBuffer));
+#if (USE_ATTINY_UART_DRIVER)
+    // สั่งล้างสีทุกแผ่นพร้อมกัน (Broadcast 0xFF ทั้ง Master และ Slave ทุกแผ่น)
+    sendTilePacketUART(TILE_PKT_DATA, BROADCAST_DEST_ID, lastFrameId, (const uint8_t*)activeBuffer, 48);
+    sendTilePacketUART(TILE_PKT_COMMIT, BROADCAST_DEST_ID, lastFrameId, nullptr, 0);
+#else
     showLEDs();
+#endif
 }
 
 void runHardwareTestSequence() {
     Serial.println("[TEST] Running 4x4 Hardware LED Test Sequence...");
 
+    uint8_t r = 40, g = 220, b = 90;
+    scaleColorToMaxBrightness(r, g, b);
+
     for (int mod = 0; mod < NUM_CELLS; mod++) {
         memset(activeBuffer, 0, sizeof(activeBuffer));
-        activeBuffer[mod][0] = 40;
-        activeBuffer[mod][1] = 220;
-        activeBuffer[mod][2] = 90;
+        activeBuffer[mod][0] = r;
+        activeBuffer[mod][1] = g;
+        activeBuffer[mod][2] = b;
         showLEDs();
         delay(120);
     }
@@ -529,16 +617,22 @@ void setup() {
     peerInfo.encrypt = false;
     esp_now_add_peer(&peerInfo);
 
+    // ส่งสัญญาณแจ้งเตือนไปยัง Unity ว่าบอร์ดแม่ (Master Board) ออนไลน์และเชื่อมต่อแล้ว
+    delay(100);
+    sendEventToUnity("/master", "online");
+
     Serial.println("======================================================");
     Serial.println(" ESP32 Master Gateway 4x4 Board Ready (ESP-NOW 2-Way)");
     Serial.print  (" Master MAC Address : ");
     Serial.println(WiFi.macAddress());
 #if (USE_ATTINY_UART_DRIVER)
     Serial.printf (" Mode: ATtiny1604 UART Driver (Hardware V1 Real Board) | Max Bright: %d/255\n", MAX_CHANNEL_VAL);
+    Serial.printf (" UART Serial2 Config: TX=GPIO%d, RX=GPIO%d @ %d baud\n", TILE_UART_TX_PIN, TILE_UART_RX_PIN, TILE_UART_BAUD);
 #else
     Serial.printf (" Mode: Direct ESP32 GPIO %d Driver (Experimental Board) | Total LEDs: %d | Max Bright: %d/255\n",
                    LED_PIN, TOTAL_LEDS, MAX_CHANNEL_VAL);
 #endif
+    Serial.println(" Commands available via Serial Monitor: PING, TEST, CORNER, CLEAR, ADDR");
     Serial.println("======================================================");
 }
 
@@ -546,6 +640,14 @@ void setup() {
 //                                LOOP
 // ============================================================================
 void loop() {
+    // 0. ดึงแพ็กเก็ตที่พักไว้ใน Ring Buffer จาก ESP-NOW มาประมวลผลบน Main Thread อย่างปลอดภัย
+    while (espNowRxTail != espNowRxHead) {
+        BoardFramePacket pkt;
+        memcpy(&pkt, (const void*)&espNowRxQueue[espNowRxTail], sizeof(BoardFramePacket));
+        espNowRxTail = (uint8_t)((espNowRxTail + 1) % ESPNOW_RX_QUEUE_SIZE);
+        processPacket(pkt);
+    }
+
     // 1. เมื่อได้รับเฟรมใหม่จาก ESP-NOW ให้อัปเดตไฟ LED และส่งต่อให้ ATtiny1604
     if (frameReadyToCommit) {
         frameReadyToCommit = false;
@@ -564,10 +666,17 @@ void loop() {
     // 4. รับข้อมูลตอบกลับจาก ATtiny1604 บอร์ดแม่ผ่าน Serial2 (ACK / รายงานขั้วต่อ)
     while (Serial2.available() > 0) {
         uint8_t b = (uint8_t)Serial2.read();
+        unsigned long nowS2 = millis();
         static enum { S2_WAIT_HEADER, S2_READ_INFO, S2_READ_PAYLOAD, S2_READ_CRC } s2State = S2_WAIT_HEADER;
         static uint8_t s2Type, s2Src, s2Dest, s2Seq, s2Frame, s2Ttl, s2Len;
         static uint8_t s2Payload[16];
         static uint8_t s2PayloadIdx = 0;
+        static unsigned long lastS2ByteAt = 0;
+
+        if (s2State != S2_WAIT_HEADER && (nowS2 - lastS2ByteAt > 50)) {
+            s2State = S2_WAIT_HEADER;
+        }
+        lastS2ByteAt = nowS2;
 
         switch (s2State) {
             case S2_WAIT_HEADER:
@@ -592,6 +701,7 @@ void loop() {
                     } else if (s2Len == 0) {
                         s2State = S2_READ_CRC;
                     } else {
+                        Serial.printf("[UART_RX <- ATTINY] Invalid payload length: %u\n", s2Len);
                         s2State = S2_WAIT_HEADER;
                     }
                 }
@@ -602,17 +712,25 @@ void loop() {
                     s2State = S2_READ_CRC;
                 }
                 break;
-            case S2_READ_CRC:
-                if (s2Type == 0x81 && s2Len >= 2) { // PKT_HELLO_ACK
-                    uint8_t ackTileId = s2Payload[0];
-                    uint8_t ackSides  = s2Payload[1];
-                    Serial.printf("[TILE_ACK] Tile %u online! Connected sides: 0x%02X\n", ackTileId, ackSides);
-                    char payloadStr[32];
-                    snprintf(payloadStr, sizeof(payloadStr), "%u_%u", ackTileId, ackSides);
-                    sendEventToUnity("board/sides", payloadStr);
+            case S2_READ_CRC: {
+                uint8_t receivedCRC = b;
+                uint8_t expectedCRC = (s2Len > 0) ? calcCRC8(s2Payload, s2Len) : 0x00;
+                if (receivedCRC == expectedCRC || receivedCRC == 0xFF) {
+                    Serial.printf("[UART_RX <- ATTINY] Valid packet! Type=0x%02X from Tile %u (len=%u)\n", s2Type, s2Src, s2Len);
+                    if (s2Type == 0x81 && s2Len >= 2) { // PKT_HELLO_ACK
+                        uint8_t ackTileId = s2Payload[0];
+                        uint8_t ackSides  = s2Payload[1];
+                        Serial.printf("[TILE_ACK] Tile %u online! Connected sides: 0x%02X\n", ackTileId, ackSides);
+                        char payloadStr[32];
+                        snprintf(payloadStr, sizeof(payloadStr), "%u_%u", ackTileId, ackSides);
+                        sendEventToUnity("board/sides", payloadStr);
+                    }
+                } else {
+                    Serial.printf("[UART_RX <- ATTINY] CRC Error! Type=0x%02X got CRC=0x%02X (expected 0x%02X)\n", s2Type, receivedCRC, expectedCRC);
                 }
                 s2State = S2_WAIT_HEADER;
                 break;
+            }
         }
     }
     #endif
@@ -636,6 +754,8 @@ void loop() {
                     if (serialCmd.equalsIgnoreCase("MAC")) {
                         Serial.print("[MASTER_4x4] MAC: ");
                         Serial.println(WiFi.macAddress());
+                    } else if (serialCmd.equalsIgnoreCase("PING")) {
+                        pingTileMaster();
                     } else if (serialCmd.equalsIgnoreCase("TEST")) {
                         runHardwareTestSequence();
                     } else if (serialCmd.equalsIgnoreCase("CORNER")) {

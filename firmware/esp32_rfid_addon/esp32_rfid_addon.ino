@@ -25,7 +25,7 @@
  *     2. ส่งสัญญาณ Card Event (รหัสการ์ด) ทันที 1 ครั้งต่อการแตะ
  *     3. ป้องกันการอ่านซ้ำ (Debounce) ขณะวางการ์ดแช่ไว้บนแท่น
  *     4. ส่งข้อมูลออกผ่าน ESP-NOW (Channel 1) เข้า USB Bridge / Master
- *     5. ส่งข้อมูลออกทาง USB Serial ในฟอร์แมต "RFID:CARD,UID=...,LEN=...,ADDON=..."
+ *     5. ส่งข้อมูลออกทาง USB Serial ในฟอร์แมตมาตรฐานของ Unity ("EVT /card <addonId>_<UID>")
  * ============================================================================
  */
 
@@ -119,27 +119,38 @@ void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 }
 
 // ============================================================================
-//                      SEND CARD PACKET VIA ESP-NOW
+//             SEND CARD PACKET VIA ESP-NOW & DIRECT USB SERIAL
 // ============================================================================
 void sendCardPacket(const uint8_t* uid, uint8_t uidLen) {
     CardPacket pkt;
     memset(&pkt, 0, sizeof(CardPacket));
 
+    uint8_t safeLen = (uidLen > 10) ? 10 : uidLen;
     pkt.header1 = HEADER_BYTE_1;
     pkt.header2 = HEADER_BYTE_2;
     pkt.pktType = PKT_TYPE_CARD;
     pkt.addonId = ADDON_ID;
-    pkt.uidLength = uidLen;
+    pkt.uidLength = safeLen;
 
-    memcpy(pkt.uid, uid, (uidLen > 10) ? 10 : uidLen);
+    memcpy(pkt.uid, uid, safeLen);
     pkt.crc = calcCRC8(&pkt.pktType, 13); // pktType(1) + addonId(1) + uidLength(1) + uid(10) = 13 bytes
 
+    // 1. ส่งออกไร้สายผ่าน ESP-NOW ไปยัง esp32_usb_bridge / esp32_master_gateway
     esp_err_t res = esp_now_send(TARGET_MAC, (const uint8_t*)&pkt, sizeof(CardPacket));
     if (res == ESP_OK) {
         Serial.printf("[ESP-NOW OK] Sent Card Packet (Addon=%d, Len=%d)\n", pkt.addonId, pkt.uidLength);
     } else {
         Serial.printf("[ESP-NOW ERR] Failed to send, err=%d\n", res);
     }
+
+    // 2. ส่งฟอร์แมตมาตรฐานเข้า Unity ทาง USB Serial ด้วย (กรณีต่อสาย USB จากแท่นการ์ดเข้าคอมโดยตรง)
+    String compactUid = "";
+    for (uint8_t i = 0; i < safeLen; i++) {
+        if (pkt.uid[i] < 0x10) compactUid += "0";
+        compactUid += String(pkt.uid[i], HEX);
+    }
+    compactUid.toUpperCase();
+    Serial.printf("EVT /card %u_%s\n", pkt.addonId, compactUid.c_str());
 }
 
 // ============================================================================
@@ -245,7 +256,7 @@ void loop() {
             bool ok = verifyMFRC522Connection();
             Serial.printf("MFRC522 Status: %s (TX ok=%u, fail=%u)\n",
                           ok ? "ONLINE" : "OFFLINE", txSuccessCount, txFailCount);
-        } else if (cmd.equalsIgnoreCase("TEST")) {
+        } else if (cmd.equalsIgnoreCase("TEST") || cmd.equalsIgnoreCase("TEST_CARD")) {
             // จำลองการแตะการ์ดทดสอบ UID: DE AD BE EF
             Serial.println("[TEST] Simulating Game Card Tap (DEADBEEF)...");
             uint8_t testUid[4] = {0xDE, 0xAD, 0xBE, 0xEF};
@@ -305,7 +316,7 @@ void loop() {
     Serial.printf("RFID:CARD,UID=%s,LEN=%d,ADDON=%d\n", uidStr.c_str(), uidLen, ADDON_ID);
     Serial.println("------------------------------------------------------");
 
-    // 3. ส่งข้อมูลการแตะการ์ดออกผ่าน ESP-NOW
+    // 3. ส่งข้อมูลการแตะการ์ดออกผ่าน ESP-NOW และพิมพ์ EVT /card ออก Serial
     sendCardPacket(mfrc522.uid.uidByte, uidLen);
 
     // สั่งปิดการสื่อสารกับการ์ดปัจจุบันให้เรียบร้อย (เพื่อให้พร้อมแตะใบต่อไป)

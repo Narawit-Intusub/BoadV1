@@ -278,6 +278,22 @@ void handleTextCommand(String line) {
         return;
     }
 
+    // สั่ง Ping บอร์ดแม่และ ATtiny1604 ผ่านคลื่นวิทยุ ESP-NOW
+    if (line.equalsIgnoreCase("PING")) {
+        sendEventEspNow("/ping", "1");
+        Serial.println("[BRIDGE] Dispatched wireless PING command to Master Board via ESP-NOW");
+        return;
+    }
+
+    // สั่งปรับเพดานความสว่างสูงสุด (1..220) ไปยังบอร์ดแม่แบบไร้สาย เช่น "BRIGHT 120"
+    if (line.startsWith("BRIGHT ") || line.startsWith("bright ")) {
+        String valStr = line.substring(7);
+        valStr.trim();
+        sendEventEspNow("/bright", valStr.c_str());
+        Serial.printf("[BRIDGE] Dispatched wireless BRIGHTNESS=%s to Master Board via ESP-NOW\n", valStr.c_str());
+        return;
+    }
+
     // 2. คำสั่งจำลอง Event ขาเข้า Unity (สำหรับพิมพ์ทดสอบใน Serial): "EVT <topic> <payload>"
     if (line.startsWith("EVT ") || line.startsWith("evt ")) {
         String rest = line.substring(4);

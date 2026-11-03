@@ -1,25 +1,7 @@
-# Modular Smart Board Game V1 — Firmware Suite
+# 🛠️ สถาปัตยกรรมเฟิร์มแวร์และฮาร์ดแวร์ (Firmware & Hardware Architecture)
+โครงการ Smart Modular Board Game (Unity IoT Smart Board)
 
-โฟลเดอร์นี้รวบรวมซอร์สโค้ดเฟิร์มแวร์ทั้งหมดของโครงการ **Modular Smart Board Game V1** ที่ได้รับการอัปเดตตรงตามวงจรฮาร์ดแวร์ PCB และระบบสื่อสาร 2 ทาง สำหรับนำไปคอมไพล์และแฟลชลงฮาร์ดแวร์จริงได้ทันที
-
----
-
-## 📁 โครงสร้างโฟลเดอร์
-
-```text
-firmware/
-├── esp32_usb_bridge/
-│   └── esp32_usb_bridge.ino          # [1] ตัวส่ง-รับสัญญาณ USB Bridge เสียบกับ Unity (ESP-NOW 2-Way)
-├── esp32_master_gateway/
-│   └── esp32_master_gateway.ino      # [2] ตัวรับ ESP-NOW บนบอร์ดแม่ (Master Gateway) ส่งต่อให้ ATtiny
-├── attiny1604_master/
-│   └── attiny1604_master.ino         # [3A] เฟิร์มแวร์เฉพาะบอร์ดแม่ (Master Tile - ID 0 คงที่, USART TX คุยกับ ESP32)
-├── attiny1604_slave/
-│   └── attiny1604_slave.ino          # [3B] เฟิร์มแวร์เฉพาะบอร์ดลูก (Slave Tiles ทุกแผ่น 100% - Auto-Addressing & Presence Detect)
-├── esp32_rfid_addon/
-│   └── esp32_rfid_addon.ino          # [4] แท่นอ่านการ์ดเกม RFID Addon (ESP32 + RC522)
-└── README.md
-```
+เอกสารฉบับนี้รวบรวมรายละเอียดสถาปัตยกรรมเฟิร์มแวร์ โปรโตคอลการสื่อสาร แผนผังฮาร์ดแวร์ ตาราง Pinout จริง การจัดการพลังงาน และการทำงานร่วมกันระหว่าง Unity, ESP32 และ ATtiny1604
 
 ---
 
@@ -37,8 +19,9 @@ firmware/
 | | | `UPDI` (แฟลชโปรแกรม) | **PA0** (Pin 10) | ต่อเข้า J_UPDI1 Header |
 | **บอร์ดลูก (Slave Boards)** | ATtiny1604-SS | `LED_DIN` (หลอดไฟ 64 ดวง) | **PA1** (Pin 11) | ผ่านตัวต้านทาน R_LED1 470 โอห์ม |
 | | | `W_D1` (รับจาก West / แผ่นก่อนหน้า)| **PB3** (Pin 6) | Hardware USART0 RX รับข้อมูลสี |
-| | | `W_D0` (ส่งกลับ West / Upstream) | **PB2** (Pin 7) | Hardware USART0 TX ตอบกลับ ACK |
+| | | `W_D0` (บอกแผ่นพี่ว่าเชื่อมต่ออยู่) | **PB2** (Pin 7) | ปิด Hardware TX, ขับ `OUTPUT LOW` ถาวร (สวิตช์ Presence Detect ดึง `E_D1` ของแผ่นพี่ลง LOW เมื่อประกบ) |
 | | | `E_D0` (ส่งต่อแผ่นถัดไป) | **PA4** (Pin 2) | Bit-Bang UART TX 115200 bps ไปขั้ว East |
+| | | `E_D1` (ตรวจจับการเสียบแผ่นถัดไป) | **PA5** (Pin 3) | `INPUT_PULLUP` เมื่อเสียบแผ่นลูกถัดไปจะถูกดึงเป็น LOW (Auto Hot-Plug) |
 | | | `UPDI` (แฟลชโปรแกรม) | **PA0** (Pin 10) | ต่อเข้า J_UPDI1 Header |
 | **แท่นอ่านการ์ด (RFID Addon)** | ESP32 Wemos D1 Mini | `RFID_SS` (SDA/CS) | **GPIO 5** | SPI Chip Select |
 | | | `RFID_RST` (Reset) | **GPIO 4** | RC522 Reset Pin |
@@ -61,6 +44,8 @@ firmware/
     * รับแพ็กเก็ตแตะการ์ดจากแท่นอ่าน RFID ส่งต่อเข้า Serial: `EVT /card <addonId>_<UID>` (เช่น `EVT /card 1_DEADBEEF`)
 * **คำสั่งทดสอบผ่าน Serial Monitor:**
   * `MAC` / `STATUS` : ตรวจสอบสถานะและจำนวนแพ็กเก็ต TX/RX
+  * `PING` : สั่ง Ping บอร์ดแม่และ ATtiny1604 แบบไร้สายผ่าน ESP-NOW
+  * `RESCAN` / `ADDR` / `SET_ID` : สั่งแจก Tile ID ใหม่อัตโนมัติแบบไร้สายผ่าน ESP-NOW
   * `CLEAR` / `FILL r g b` / `CORNER` / `TEST` : ทดสอบแสดงผลสีบนกระดาน
   * `TEST_CARD` : จำลองการแตะการ์ดเข้า Unity (`EVT /card 1_DEADBEEF`)
   * `CMD <topic> <payload>` : ส่งคำสั่งเข้าสู่ระบบ ESP-NOW
@@ -80,24 +65,39 @@ firmware/
 
 ---
 
-## 3. `attiny1604_master` & `attiny1604_slave` (ไมโครคอนโทรลเลอร์ประจำแผ่น)
-* **ฮาร์ดแวร์:** Microchip ATtiny1604-SS (SOIC-14) แยกโฟลเดอร์สำหรับแผ่นแม่และแผ่นลูกอย่างชัดเจน:
-  * **`attiny1604_master` (บอร์ดแม่ 1 แผ่น):**
-    * กำหนด ID ประจำแผ่นเป็น `0` คงที่ตั้งแต่บูต
-    * พิน **PB2** ทำหน้าที่เป็น Hardware USART TX ส่งข้อมูลกลับ ESP32 ทางสายตรง
-    * พิน **PA5 (East D1)** ทำหน้าที่เป็น `INPUT_PULLUP` Presence Detect ตรวจจับการเสียบแผ่นลูก
-    * เมื่อตรวจพบแผ่นลูกแผ่นแรกเสียบเข้ามา จะส่งคำสั่งแจก ID 1 ออกทางขา **PA4 (Bit-Bang TX 115200 bps)** ทันที
-  * **`attiny1604_slave` (บอร์ดลูกทุกแผ่น 100%):**
-    * พิน **PB2 (West D0)** ขับ `OUTPUT LOW` ถาวร เพื่อเป็นสวิตช์ Presence Detect ดึงขาแผ่นพี่ลงกราวด์ทันทีที่แม่เหล็กประกบ
-    * พิน **PB3 (West D1)** รับแพ็กเก็ตจากแผ่นพี่
-    * เมื่อได้รับ ID ตัวเอง จะบวก 1 ทันทีแล้วส่งต่อคำสั่ง `PKT_SET_ID` ออกทาง **PA4** ให้แผ่นถัดไป
-    * เมื่อมีแผ่นลูกใหม่มาต่อทางทิศ East จะตรวจจับผ่านพิน **PA5** แล้วแจก ID ให้แผ่นถัดไปแบบอัตโนมัติ
-* **คุณสมบัติร่วมของทั้งสองฝั่ง:**
-  * เก็บข้อมูลใน **Back Buffer** และสลับไปยัง **Active Buffer** เมื่อได้รับคำสั่ง `PKT_FRAME_COMMIT`
-  * ใช้ **`tinyNeoPixel_Static`** จัดสรรหน่วยความจำแบบคงที่ ป้องกันปัญหา RAM 1KB เต็ม
-  * ขยายข้อมูล 16 ช่อง เป็นหลอดไฟ WS2812B จำนวน 64 ดวง (ช่องละ 4 ดวง) ยิงสัญญาณพัลส์ 800 kHz ออกทาง **ขา PA1 (Pin 11)**
-  * มีระบบคัดกรองแพ็กเก็ตซ้ำด้วย `lastSeqNumber` (Deduplication) และตรวจ Checksum CRC-8
-* **การตั้งค่าใน Arduino IDE:**
+## 3. `attiny1604_master` และ `attiny1604_slave` (ไมโครคอนโทรลเลอร์ประจำแผ่น)
+สถาปัตยกรรมแยกเฟิร์มแวร์ 2 ชุดตามวงจร KiCad จริง เพื่อขจัดปัญหาความขัดแย้งของพิน PB2:
+
+### 3.1 `attiny1604_master` (บอร์ดแม่ Master Tile เท่านั้น)
+* **ฮาร์ดแวร์:** Microchip ATtiny1604-SS บนบอร์ดแม่ (`hardware/master/master.kicad_sch`)
+* **หน้าที่:**
+  * กำหนด ID ประจำแผ่นตายตัวเป็น **`myTileId = 0`**
+  * รับข้อมูลแพ็กเก็ตสีจาก ESP32 ผ่านพอร์ต Hardware USART0 (115200 bps) ที่ขา **PB3 (RX)**
+  * ส่งข้อมูลตอบกลับหรือสถานะไปยัง ESP32 ผ่านขา **PB2 (TX)** (Hardware USART0 TX)
+  * ส่งต่อแพ็กเก็ตสีไปยังแผ่นลูกแผ่นแรก (Slave 1) ทางขั้ว East ผ่านขา **PA4 (Bit-Bang UART TX 115200 bps)**
+  * ขา **PA5 (`PIN_E_D1`)** ตรวจจับการเสียบแผ่นลูกแผ่นแรก (`INPUT_PULLUP`) หากตรวจพบจะส่งคำสั่งแจก `myTileId = 1` ให้ Slave 1 ทันทีแบบ Hot-Plug
+  * ควบคุมไฟ WS2812B จำนวน 64 ดวง (2x2 ต่อช่อง 16 ช่อง) ผ่านขา **PA1** ด้วย **`tinyNeoPixel_Static`**
+
+### 3.2 `attiny1604_slave` (บอร์ดลูก Slave Tiles ทุกแผ่น 100%)
+* **ฮาร์ดแวร์:** Microchip ATtiny1604-SS บนบอร์ดลูก (`hardware/slave/slave.kicad_sch`)
+* **หน้าที่:**
+  * **ใช้ไฟล์เฟิร์มแวร์นี้ชุดเดียวเบิร์นลงแผ่น Slave ทุกแผ่น (Slave 1, 2, 3...) ไม่ต้องแก้โค้ด**
+  * รับข้อมูลแพ็กเก็ตสีจากแผ่นพี่ผ่านพอร์ต Hardware USART0 (115200 bps) ที่ขา **PB3 (RX)**
+  * ปิด Hardware TX บนขา **PB2** และขับเป็น **`OUTPUT LOW` ถาวร** ทำหน้าที่เป็นสวิตช์ Presence Detect ดึงขา `E_D1` ของแผ่นพี่ลง Ground ทันทีที่ประกบขั้วแม่เหล็ก
+  * รับคำสั่ง **Auto-Addressing (`PKT_SET_ID`)**: เมื่อแผ่นนี้ได้รับ ID ของตัวเอง จะหน่วงเวลาสั้นๆ แล้วบวก 1 (`nextId = myTileId + 1`) ส่งต่อออกขา **PA4 (Bit-Bang TX)** ให้แผ่นลูกถัดไปอัตโนมัติ
+  * ขา **PA5 (`PIN_E_D1`)** ตรวจจับการเสียบแผ่นลูกถัดไป (`INPUT_PULLUP`) รองรับ **Dynamic Hot-Plug** ขณะเปิดเครื่อง
+  * รองรับ Double Buffering (Back Buffer 48B + Active Buffer 48B) และคำสั่ง Commit ทั้งแบบรายแผ่นและ Broadcast ทุกแผ่น
+
+### 3.3 `attiny1604_test_led` (ชุดทดสอบหลอดไฟฮาร์ดแวร์ Standalone)
+* **ฮาร์ดแวร์:** Microchip ATtiny1604-SS (ใช้ได้ทั้งแผ่น Master และแผ่น Slave)
+* **หน้าที่:**
+  * ใช้ทดสอบการบัดกรีและสายสัญญาณหลอดไฟ WS2812B ทั้ง 64 ดวงผ่านขา **PA1** โดยไม่ต้องเชื่อมต่อ ESP32
+  * รันลูปทดสอบอัตโนมัติ 3 รูปแบบที่ความสว่างปลอดภัย (`50/255`):
+    1. **Dot Chase**: ไฟวิ่งไล่ทีละดวงครบ 1-64 ดวง
+    2. **Cell Chase**: ไฟติดทีละช่องตาราง $4\times 4$ (ช่องละ 4 ดวง) สลับสี แดง, เขียว, น้ำเงิน, ส้ม
+    3. **Color Fill Wipe**: กวาดสีแดง, เขียว, น้ำเงิน จนเต็มบอร์ด
+
+* **การตั้งค่าใน Arduino IDE (สำหรับทั้ง Master, Slave และ Test LED):**
   * Board: `megaTinyCore` $\rightarrow$ `ATtiny1604`
   * Clock: `16 MHz internal` หรือ `20 MHz internal`
   * Programmer: `SerialUPDI`
@@ -153,3 +153,41 @@ firmware/
 │       esp32_rfid_addon      │ (แท่นอ่านการ์ด RC522)
 └─────────────────────────────┘
 ```
+
+---
+
+## ⚡ 5. การจัดการพลังงานและข้อจำกัดไฟ LED (Power Management)
+
+* **แหล่งจ่ายไฟประจำแผ่น**: ใช้ชิปสเต็ปดาวน์ **MP2315** แปลงไฟลงมาที่ 5V จ่ายกระแสต่อเนื่องได้สูงสุด **3.0A (Peak 4.0A)**
+* **เพดานความปลอดภัยของหลอดไฟ (Hardware Safety Clamp)**:
+  - ใน `esp32_master_gateway.ino`: `#define MAX_CHANNEL_VAL 120`
+  - ใน `attiny1604_master.ino` และ `attiny1604_slave.ino`: `#define MAX_BRIGHTNESS 120`
+  - สัดส่วนความสว่างอยู่ที่ **`120/255` (~47%)** ทำให้แสงสว่างชัดเจนทะลุฝาครอบอะคริลิก และประหยัดพลังงาน
+
+### การกินกระแสจริงบนแผ่นกระดาน 4x4 (64 หลอด WS2812B):
+| สีที่เปิดใช้งาน | กระแสต่อหลอด (ที่ค่า 120) | กระแสรวม 64 หลอด | ความปลอดภัยต่อ MP2315 (3.0A) |
+| :--- | :--- | :--- | :--- |
+| **สีเดี่ยว** (แดง, เขียว, น้ำเงินล้วน) | ~9.4 mA | **~0.60 A** | ปลอดภัยมาก (ใช้เพียง 20% ของพิกัด) |
+| **สีผสม 2 สี** (เหลือง, ฟ้า Cyan, ม่วง) | ~18.8 mA | **~1.20 A** | ปลอดภัยมาก (ใช้เพียง 40% ของพิกัด) |
+| **สีขาว** (กรณีเลวร้ายที่สุด 64 หลอดพร้อมกัน) | ~28.2 mA | **~1.81 A** | ปลอดภัย (มี Safety Margin เหลือกว่า 1.2A) |
+
+---
+
+## 💻 6. ข้อมูลการคอมไพล์และแฟลชชิป (Flashing Instructions)
+
+### A. สำหรับ ESP32 (Bridge, Master Gateway, RFID Addon)
+* **ซอฟต์แวร์**: Arduino IDE 2.x หรือ PlatformIO
+* **บอร์ด**: `ESP32 Dev Module` หรือ `LOLIN D1 mini ESP32`
+* **ตั้งค่าคอมไพล์**:
+  - Flash Frequency: 80MHz
+  - Upload Speed: 921600 หรือ 115200
+  - Core Debug Level: None / Info
+
+### B. สำหรับ ATtiny1604 (Tile Controller)
+* **บอร์ด Core**: [megaTinyCore](https://github.com/SpenceKonde/megaTinyCore) โดย Spence Konde
+* **บอร์ด**: `ATtiny1604`
+* **ตั้งค่าคอมไพล์**:
+  - Clock: `20 MHz internal` หรือ `16 MHz internal`
+  - Programmer: `SerialUPDI` (ผ่านขั้ว UPDI บนพิน PA0)
+  - Pinout: Standard
+* **ไลบรารีที่ต้องใช้**: `tinyNeoPixel_Static` (มีมาพร้อมกับ megaTinyCore)

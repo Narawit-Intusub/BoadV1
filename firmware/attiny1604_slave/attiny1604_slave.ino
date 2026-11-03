@@ -24,17 +24,18 @@
  *     * South (Side 2) : PA6 (S_D0, Pin 4 - INPUT_PULLUP), PA7 (S_D1, Pin 5 - OUTPUT LOW)
  *     * West  (Side 3) : ได้รับไฟและข้อมูลจาก West อยู่แล้ว (West Connected = 1 เสมอ)
  * 
- * คุณสมบัติ:
- *   1. ดับเบิลบัฟเฟอร์ (Double Buffering: Back Buffer 48B + Active Buffer 48B)
- *   2. ใช้ tinyNeoPixel_Static ป้องกันการเกิด Dynamic Memory Fragmentation บน RAM 1KB
- *   3. Clamp ความสว่างสูงสุดไม่เกิน MAX_BRIGHTNESS = 120/255 เพื่อความปลอดภัย
- *   4. Daisy-Chain Forwarding: ส่งต่อข้อมูลไปแผ่นถัดไปทางขา East PA4
- *   5. Auto-Addressing & Hot-Plug: รับ ID ตัวเองแล้วส่งต่อ ID+1 ให้แผ่นถัดไปเป็นลูกโซ่
+ * บทบาทหน้าที่ (Pure Hardware LED Driver & Daisy-Chain Router - แฟลชครั้งเดียวจบ):
+ *   1. รับค่าสี RGB 48 ไบต์ที่คำนวณความสว่างและพิกัดมาจาก ESP32 Master Gateway แล้วเก็บเข้า Back Buffer (Double Buffering)
+ *   2. เมื่อได้รับคำสั่ง PKT_FRAME_COMMIT (0x03) จะสลับเข้า Active Buffer แล้วขับไฟ WS2812B 64 ดวงผ่าน tinyNeoPixel_Static ทันที
+ *   3. Daisy-Chain Router: หากแพ็กเก็ตระบุปลายทางเป็นแผ่นอื่น (dest != myTileId หรือ Broadcast 0xFF) จะส่งต่อออกขา East PA4 ด้วยความเร็ว 115200 bps
+ *   4. Auto-Addressing & Hot-Plug: รับ ID ตัวเองแล้วบวก 1 ส่งต่อให้แผ่นถัดไปเป็นลูกโซ่อัตโนมัติทันทีที่ประกบขั้วแม่เหล็ก East (PIN_E_D1)
+ *   5. การปรับความสว่าง ทิศทางกระดาน หรือลอจิกเกมทั้งหมด ถูกจัดการที่ฝั่ง ESP32 (Gateway / USB Bridge) 100% จึงไม่ต้องกลับมาแก้ไขหรือแฟลชชิป ATtiny1604 ซ้ำอีก
  * ============================================================================
  */
 
 #include <Arduino.h>
 #include <tinyNeoPixel_Static.h>
+#include <util/delay.h>
 
 // ============================================================================
 //                         PIN & HARDWARE DEFINITIONS
@@ -56,7 +57,6 @@
 #define NUM_CELLS           16       // ตาราง 4x4 ช่อง
 #define LEDS_PER_CELL       4        // 2x2 ดวงต่อช่อง
 #define TOTAL_LEDS          (NUM_CELLS * LEDS_PER_CELL) // 64 ดวง
-#define MAX_BRIGHTNESS      120      // จำกัดค่าความสว่างสูงสุด (120/255) ป้องกันความร้อน
 
 uint8_t myTileId = 0xFF;             // เริ่มต้นเป็น 0xFF (รอรับ ID อัตโนมัติจากแผ่นพี่)
 
@@ -118,24 +118,29 @@ void updateLEDsFromActiveBuffer() {
 }
 
 // ส่งไบต์แบบ Bit-Bang UART (115200 bps, 8.68 us/bit) ออกขา East PA4
+// ใช้ Direct Port Register (PORTA.OUTSET / OUTCLR = 1 ลูกคลื่นสัญญาณนาฬิกา) แทน digitalWrite()
+// เพื่อป้องกัน Baud Rate เพี้ยนที่ความเร็ว 115200 bps บนชิป 16/20 MHz
 void txBitBangByte(uint8_t b) {
     uint8_t oldSreg = SREG;
-    cli(); // ปิดอินเทอร์รัปต์ชั่วคราวเพื่อจังหวะเวลาที่แม่นยำ
+    cli(); // ปิดอินเทอร์รัปต์ชั่วคราวเพื่อจังหวะเวลาระดับไมโครวินาทีที่แม่นยำ
 
     // Start Bit (LOW)
-    digitalWrite(FORWARD_TX_PIN, LOW);
-    _delay_us(8.68);
+    PORTA.OUTCLR = PIN4_bm;
+    _delay_us(8.5);
 
     // 8 Data Bits (LSB First)
     for (uint8_t i = 0; i < 8; i++) {
-        if (b & 0x01) digitalWrite(FORWARD_TX_PIN, HIGH);
-        else digitalWrite(FORWARD_TX_PIN, LOW);
-        _delay_us(8.68);
+        if (b & 0x01) {
+            PORTA.OUTSET = PIN4_bm;
+        } else {
+            PORTA.OUTCLR = PIN4_bm;
+        }
+        _delay_us(8.4);
         b >>= 1;
     }
 
     // Stop Bit (HIGH)
-    digitalWrite(FORWARD_TX_PIN, HIGH);
+    PORTA.OUTSET = PIN4_bm;
     _delay_us(8.68);
 
     SREG = oldSreg;
@@ -195,25 +200,16 @@ void processPacket(uint8_t type, uint8_t src, uint8_t dest, uint8_t seq, uint8_t
     }
 
     // 4. ข้อมูลสีของแผ่นนี้ (dest == myTileId หรือ dest == 0xFF)
+    // รับค่าสีที่ถูกคำนวณความสว่างและแปลงพิกัดมาจาก ESP32 Master Gateway แล้วเก็บลง Back Buffer ทันที
     if (type == PKT_TILE_DATA) {
-        for (uint8_t cell = 0; cell < NUM_CELLS && (cell * 3 + 2) < len; cell++) {
-            uint8_t r = data[cell * 3 + 0];
-            uint8_t g = data[cell * 3 + 1];
-            uint8_t b = data[cell * 3 + 2];
+        uint8_t copyLen = (len > sizeof(backBuffer)) ? sizeof(backBuffer) : len;
+        if (copyLen > 0) {
+            memcpy(backBuffer, data, copyLen);
+        }
 
-            // ปรับสเกลความสว่างไม่ให้เกิน MAX_BRIGHTNESS
-            uint8_t maxComp = r;
-            if (g > maxComp) maxComp = g;
-            if (b > maxComp) maxComp = b;
-            if (maxComp > MAX_BRIGHTNESS) {
-                r = (uint8_t)((uint16_t)r * MAX_BRIGHTNESS / maxComp);
-                g = (uint8_t)((uint16_t)g * MAX_BRIGHTNESS / maxComp);
-                b = (uint8_t)((uint16_t)b * MAX_BRIGHTNESS / maxComp);
-            }
-
-            backBuffer[cell * 3 + 0] = r;
-            backBuffer[cell * 3 + 1] = g;
-            backBuffer[cell * 3 + 2] = b;
+        // หากเป็นคำสั่ง Broadcast (0xFF) ให้ส่งต่อข้อมูลสีไปยังแผ่นถัดไปด้วย
+        if (dest == 0xFF) {
+            forwardPacketEast(type, src, dest, seq, frame, ttl, data, len);
         }
     } 
     else if (type == PKT_FRAME_COMMIT) {
@@ -232,7 +228,8 @@ void processPacket(uint8_t type, uint8_t src, uint8_t dest, uint8_t seq, uint8_t
 //                                SETUP
 // ============================================================================
 void setup() {
-    // 1. เริ่มต้น Hardware USART0 RX บนพิน PB3(RX)
+    // 1. ล็อคพินมาตรฐาน USART0 RX บนพิน PB3(RX) และเริ่มต้นที่ 115200 bps
+    Serial.swap(0);
     Serial.begin(115200);
 
     // ปิด USART TX hardware driver บน PB2 และขับเป็น OUTPUT LOW ถาวร
@@ -290,9 +287,16 @@ void loop() {
     static uint8_t pktType, srcId, destId, seqNum, frameNum, ttl, payloadLen;
     static uint8_t payload[64];
     static uint8_t payloadIndex = 0;
+    static unsigned long lastByteAt = 0;
 
     while (Serial.available()) {
         uint8_t byteIn = Serial.read();
+        unsigned long now = millis();
+
+        if (state != WAIT_HEADER && (now - lastByteAt > 25)) {
+            state = WAIT_HEADER;
+        }
+        lastByteAt = now;
 
         switch (state) {
             case WAIT_HEADER:
@@ -333,8 +337,8 @@ void loop() {
 
             case READ_CRC: {
                 uint8_t receivedCRC = byteIn;
-                uint8_t expectedCRC = calculateCRC8(payload, payloadLen);
-                if (receivedCRC == expectedCRC || receivedCRC == 0x00 || receivedCRC == 0xFF) {
+                uint8_t expectedCRC = (payloadLen > 0) ? calculateCRC8(payload, payloadLen) : 0x00;
+                if (receivedCRC == expectedCRC || receivedCRC == 0xFF) {
                     processPacket(pktType, srcId, destId, seqNum, frameNum, ttl, payload, payloadLen);
                 }
                 state = WAIT_HEADER;
@@ -343,4 +347,3 @@ void loop() {
         }
     }
 }
-
